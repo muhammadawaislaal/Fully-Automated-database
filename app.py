@@ -156,7 +156,7 @@ INSERT INTO orders (customer_id, product_id, qty, order_date, status, total_amou
   (1, 5, 1, '2024-09-05', 'Completed', 15.00),
   (2, 3, 2, '2024-09-10', 'Completed', 59.00),
   (6, 6, 1, '2024-09-15', 'Completed', 99.99),
-  (7, 7, 1, '2024-09-20', 'Completed', 49.99),
+  ('7', 7, 1, '2024-09-20', 'Completed', 49.99),
   (8, 8, 1, '2024-09-25', 'Pending', 149.99),
   (6, 2, 2, '2024-10-01', 'Processing', 39.98),
   (7, 4, 1, '2024-10-05', 'Processing', 39.99);
@@ -338,7 +338,8 @@ Default dialect: SQLite. IMPORTANT RULES:
 2. Use explicit table.column references when needed
 3. When user says 'clients', use 'customers' table
 4. When user says 'client_id', use 'customer_id' column
-5. Use proper date formatting for SQLite: strftime() functions"""
+5. Use proper date formatting for SQLite: strftime() functions
+6. Always include required fields like hire_date for Employees table"""
 
     user_msg = f"""Database schema:
 {schema_text}
@@ -378,6 +379,7 @@ Include:
 2. Primary keys and foreign key relationships
 3. Sample data insertion statements for at least 5 rows per table
 4. Comments explaining the purpose of each table
+5. Make sure to include all required fields and NOT NULL constraints where appropriate
 
 Return only the SQL code without any explanations or markdown formatting."""
 
@@ -389,7 +391,7 @@ Return only the SQL code without any explanations or markdown formatting."""
                 {"role": "user", "content": description}
             ],
             temperature=0.1,
-            max_tokens=1500,
+            max_tokens=2000,
         )
         sql_code = resp['choices'][0]['message']['content']
         # Clean up the SQL code
@@ -417,6 +419,9 @@ def execute_schema_creation(sql_code: str, db_path: str = "custom_db.sqlite") ->
         return True
     except Exception as e:
         st.error(f"Error creating database: {e}")
+        # Try to provide more specific error message
+        if "NOT NULL" in str(e):
+            st.error("Error: Missing required field. Make sure all required fields are provided in sample data.")
         return False
 
 # ----------------- Data Visualization Functions -----------------
@@ -613,7 +618,7 @@ def main():
                                 except Exception as e:
                                     st.error(f"Connected but encountered error: {e}")
                             else:
-                                st.error("Failed to create database.")
+                                st.error("Failed to create database. Please check that all required fields are included.")
                     else:
                         st.error(f"Failed to generate schema: {error}")
 
