@@ -3,6 +3,7 @@ import re
 import streamlit as st
 import pandas as pd
 import sqlite3
+# Remove matplotlib and seaborn imports
 from sqlalchemy import create_engine, text, inspect, MetaData, Table, Column, String, Integer, Float, DateTime
 from openai import OpenAI
 from datetime import datetime
@@ -836,4 +837,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
