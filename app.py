@@ -5,7 +5,7 @@ import pandas as pd
 import sqlite3
 # Remove matplotlib and seaborn imports
 from sqlalchemy import create_engine, text, inspect, MetaData, Table, Column, String, Integer, Float, DateTime
-from openai import OpenAI
+import openai
 from datetime import datetime
 from typing import Tuple, Dict, Optional, List
 import tempfile
@@ -849,6 +849,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
