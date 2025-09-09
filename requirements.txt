@@ -3,9 +3,8 @@ openai==1.12.0
 pandas==2.1.4
 sqlalchemy==2.0.25
 plotly==5.18.0
-matplotlib==3.8.2; python_version < '3.12'
-seaborn==0.13.0; python_version < '3.12'
-numpy==1.26.4
+matplotlib==3.7.5
+seaborn==0.12.2
+numpy==1.24.3
 python-dotenv==1.0.1
 altair==5.2.0
-protobuf==3.20.3
