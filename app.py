@@ -3,7 +3,6 @@ import re
 import streamlit as st
 import pandas as pd
 import sqlite3
-# Remove matplotlib and seaborn imports
 from sqlalchemy import create_engine, text, inspect, MetaData, Table, Column, String, Integer, Float, DateTime
 import openai
 from datetime import datetime
@@ -17,28 +16,16 @@ from plotly.subplots import make_subplots
 # ----------------- Config & OpenAI client -----------------
 st.set_page_config(page_title="AI Database Assistant", layout="wide", page_icon="🤖")
 
-# NEW CODE (use this):
-try:
-    # For newer OpenAI versions (1.x)
-    if "OPENAI_API_KEY" in st.secrets:
-        client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
-    elif os.getenv("OPENAI_API_KEY"):
-        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-    else:
-        st.error("No OpenAI API key found. Add OPENAI_API_KEY in Streamlit Secrets or environment.")
-        st.stop()
-except TypeError:
-    # Fallback for older versions (0.28.x)
-    if "OPENAI_API_KEY" in st.secrets:
-        client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
-    elif os.getenv("OPENAI_API_KEY"):
-        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-    else:
-        st.error("No OpenAI API key found. Add OPENAI_API_KEY in Streamlit Secrets or environment.")
-        st.stop()
+if "OPENAI_API_KEY" in st.secrets:
+    openai.api_key = st.secrets["OPENAI_API_KEY"]
+elif os.getenv("OPENAI_API_KEY"):
+    openai.api_key = os.getenv("OPENAI_API_KEY")
+else:
+    st.error("No OpenAI API key found. Add OPENAI_API_KEY in Streamlit Secrets or environment.")
+    st.stop()
 
 # ----------------- Utility / safety -----------------
-FORBIDDEN = {"DROP", "ALTER", "TRUNCATE", "ATTACH", "DETACH", "VACUUM", "PRAGMA", "CREATE", "DELETE"}
+FORBIDDEN = {"DROP", "ALTER", "TRUNCATE", "ATTACH", "DETACH", "VACUUM", "PRAGMA"}
 
 def fix_group_order_aliases(sql: str) -> str:
     """
@@ -362,7 +349,7 @@ Generate a clean SQL query that answers the user's request.
 Return only the SQL statement without any explanations or code fences."""
 
     try:
-        resp = client.chat.completions.create(
+        resp = openai.ChatCompletion.create(
             model="gpt-4o-mini",
             messages=[
                 {"role": "system", "content": system_msg},
@@ -371,7 +358,7 @@ Return only the SQL statement without any explanations or code fences."""
             temperature=0,
             max_tokens=500,
         )
-        raw = resp.choices[0].message.content
+        raw = resp['choices'][0]['message']['content']
         cleaned = extract_sql(raw)
         return True, raw, cleaned
     except Exception as e:
@@ -395,7 +382,7 @@ Include:
 Return only the SQL code without any explanations or markdown formatting."""
 
     try:
-        resp = client.chat.completions.create(
+        resp = openai.ChatCompletion.create(
             model="gpt-4o-mini",
             messages=[
                 {"role": "system", "content": system_msg},
@@ -404,7 +391,7 @@ Return only the SQL code without any explanations or markdown formatting."""
             temperature=0.1,
             max_tokens=1500,
         )
-        sql_code = resp.choices[0].message.content
+        sql_code = resp['choices'][0]['message']['content']
         # Clean up the SQL code
         sql_code = re.sub(r"```(?:sql)?\s*", "", sql_code)
         sql_code = re.sub(r"```\s*$", "", sql_code)
@@ -498,7 +485,7 @@ def generate_insights_from_data(df: pd.DataFrame, table_name: str = None) -> str
 Focus on trends, patterns, anomalies, and business implications. Keep each insight concise and actionable."""
 
     try:
-        resp = client.chat.completions.create(
+        resp = openai.ChatCompletion.create(
             model="gpt-4o-mini",
             messages=[
                 {"role": "system", "content": system_msg},
@@ -507,7 +494,7 @@ Focus on trends, patterns, anomalies, and business implications. Keep each insig
             temperature=0.7,
             max_tokens=500,
         )
-        return resp.choices[0].message.content
+        return resp['choices'][0]['message']['content']
     except Exception as e:
         return f"Error generating insights: {e}"
 
@@ -849,7 +836,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-
-
