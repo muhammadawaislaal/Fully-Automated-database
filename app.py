@@ -17,13 +17,25 @@ from plotly.subplots import make_subplots
 # ----------------- Config & OpenAI client -----------------
 st.set_page_config(page_title="AI Database Assistant", layout="wide", page_icon="🤖")
 
-if "OPENAI_API_KEY" in st.secrets:
-    client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
-elif os.getenv("OPENAI_API_KEY"):
-    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-else:
-    st.error("No OpenAI API key found. Add OPENAI_API_KEY in Streamlit Secrets or environment.")
-    st.stop()
+# NEW CODE (use this):
+try:
+    # For newer OpenAI versions (1.x)
+    if "OPENAI_API_KEY" in st.secrets:
+        client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+    elif os.getenv("OPENAI_API_KEY"):
+        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    else:
+        st.error("No OpenAI API key found. Add OPENAI_API_KEY in Streamlit Secrets or environment.")
+        st.stop()
+except TypeError:
+    # Fallback for older versions (0.28.x)
+    if "OPENAI_API_KEY" in st.secrets:
+        client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+    elif os.getenv("OPENAI_API_KEY"):
+        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    else:
+        st.error("No OpenAI API key found. Add OPENAI_API_KEY in Streamlit Secrets or environment.")
+        st.stop()
 
 # ----------------- Utility / safety -----------------
 FORBIDDEN = {"DROP", "ALTER", "TRUNCATE", "ATTACH", "DETACH", "VACUUM", "PRAGMA", "CREATE", "DELETE"}
@@ -837,5 +849,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
