@@ -1,9 +1,10 @@
-streamlit>=1.36.0
-pandas>=2.2.0
-sqlalchemy>=2.0.25
-openai>=1.40.0
-altair>=5.2.0
-graphviz>=0.20.1
-psycopg2-binary>=2.9.9   # For PostgreSQL
-pymysql>=1.1.0           # For MySQL
-
+streamlit==1.32.0
+openai==1.12.0
+pandas==2.1.4
+sqlalchemy==2.0.25
+plotly==5.18.0
+matplotlib==3.8.2
+seaborn==0.13.0
+numpy==1.26.4
+python-dotenv==1.0.1
+altair==5.2.0
