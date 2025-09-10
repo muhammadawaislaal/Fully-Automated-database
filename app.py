@@ -17,6 +17,62 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# Custom CSS for better UI
+st.markdown("""
+<style>
+    .main-header {
+        font-size: 3rem;
+        color: #1f77b4;
+        text-align: center;
+        margin-bottom: 1rem;
+    }
+    .sub-header {
+        font-size: 1.5rem;
+        color: #2c3e50;
+        border-bottom: 2px solid #3498db;
+        padding-bottom: 0.5rem;
+        margin-top: 1.5rem;
+    }
+    .info-box {
+        background-color: #f8f9fa;
+        padding: 1.5rem;
+        border-radius: 0.5rem;
+        border-left: 4px solid #3498db;
+        margin-bottom: 1rem;
+    }
+    .success-box {
+        background-color: #d4edda;
+        padding: 1rem;
+        border-radius: 0.5rem;
+        border-left: 4px solid #28a745;
+        margin: 1rem 0;
+    }
+    .warning-box {
+        background-color: #fff3cd;
+        padding: 1rem;
+        border-radius: 0.5rem;
+        border-left: 4px solid #ffc107;
+        margin: 1rem 0;
+    }
+    .error-box {
+        background-color: #f8d7da;
+        padding: 1rem;
+        border-radius: 0.5rem;
+        border-left: 4px solid #dc3545;
+        margin: 1rem 0;
+    }
+    .stButton button {
+        width: 100%;
+        background-color: #3498db;
+        color: white;
+    }
+    .stButton button:hover {
+        background-color: #2980b9;
+        color: white;
+    }
+</style>
+""", unsafe_allow_html=True)
+
 # Initialize session state
 if "db_initialized" not in st.session_state:
     st.session_state.db_initialized = False
@@ -32,6 +88,8 @@ if "exploration_df" not in st.session_state:
     st.session_state.exploration_df = pd.DataFrame()
 if "exploration_history" not in st.session_state:
     st.session_state.exploration_history = []
+if "read_only_mode" not in st.session_state:
+    st.session_state.read_only_mode = True
 
 # Set OpenAI API key
 try:
@@ -173,11 +231,11 @@ INSERT OR IGNORE INTO assignments (assignment_id, employee_id, project_id, role)
 
 def make_engine(db_type: str, sqlite_path: str = None, url: str = None):
     try:
-        if db_type in ["SQLite (local demo)", "SQLite (custom)"]:
+        if db_type == "SQLite (Demo)":
             if not sqlite_path:
                 sqlite_path = "demo_db.sqlite"
             return create_engine(f"sqlite:///{sqlite_path}", connect_args={"check_same_thread": False})
-        else:
+        else:  # PostgreSQL
             if not url:
                 raise ValueError("No connection URL provided.")
             return create_engine(url)
@@ -463,76 +521,123 @@ Focus on trends, patterns, anomalies, and business implications. Keep insights c
 
 # ----------------- Enhanced UI with better error handling -----------------
 def main():
-    st.sidebar.header("🔧 Database Configuration")
-    db_type = st.sidebar.selectbox("Database Type", ["SQLite (local demo)", "SQLite (custom)", "Postgres / MySQL (custom URL)"])
-
-    # Database connection setup
-    if db_type == "SQLite (local demo)":
-        sqlite_path = st.sidebar.text_input("SQLite Database Path", value="demo_db.sqlite")
+    # Sidebar
+    with st.sidebar:
+        st.markdown("<h1 style='text-align: center; color: #3498db;'>🤖 AI Database Assistant</h1>", unsafe_allow_html=True)
         
-        if st.sidebar.button("🚀 Initialize Demo Database", help="Create sample database with demo data"):
-            with st.spinner("Creating demo database..."):
-                success = init_sqlite_demo(sqlite_path)
-                if success:
-                    st.session_state.current_db_path = sqlite_path
-                    st.sidebar.success("✅ Demo database created successfully!")
-                    st.session_state.db_initialized = True
-                else:
-                    st.sidebar.error("❌ Failed to create demo database")
-
-        if st.sidebar.button("🔗 Connect to Database"):
-            try:
-                engine = make_engine(db_type, sqlite_path=sqlite_path)
-                if engine:
-                    st.session_state.engine = engine
-                    st.session_state.schema_text = get_schema_text(engine)
-                    st.session_state.schema_dict = get_schema_dict(engine)
-                    st.session_state.current_db_path = sqlite_path
-                    st.sidebar.success("✅ Connected to database!")
-                else:
-                    st.sidebar.error("❌ Failed to create database engine")
-            except Exception as e:
-                st.sidebar.error(f"❌ Connection failed: {e}")
-
-    elif db_type == "SQLite (custom)":
-        custom_db_path = st.sidebar.text_input("Custom Database Path", value="custom_db.sqlite")
-        st.session_state.current_db_path = custom_db_path
+        # Instructions
+        with st.expander("📋 How to Use", expanded=True):
+            st.markdown("""
+            **1. Setup Database**: Connect to a demo database or create your own
+            
+            **2. Explore Data**: Ask questions in plain English about your data
+            
+            **3. Manage Data**: Add, update, or delete records using natural language
+            
+            **4. Visualize**: Create charts and get insights from your data
+            
+            **Examples**:
+            - "Show me all employees with their departments"
+            - "Add a new employee named John Doe"
+            - "Update Lisa's salary to $70,000"
+            - "Create a bar chart of salaries by department"
+            """)
         
-        if st.sidebar.button("🔗 Connect to Custom Database"):
-            try:
-                engine = make_engine(db_type, sqlite_path=custom_db_path)
-                if engine:
-                    st.session_state.engine = engine
-                    st.session_state.schema_text = get_schema_text(engine)
-                    st.session_state.schema_dict = get_schema_dict(engine)
-                    st.sidebar.success("✅ Connected to custom database!")
-                else:
-                    st.sidebar.error("❌ Failed to create database engine")
-            except Exception as e:
-                st.sidebar.error(f"❌ Connection failed: {e}")
+        st.markdown("---")
+        st.header("🔧 Database Configuration")
+        db_type = st.selectbox("Database Type", ["SQLite (Demo)", "PostgreSQL (Custom)"])
+        
+        if db_type == "SQLite (Demo)":
+            st.markdown("""
+            <div class='info-box'>
+            <b>SQLite Demo Database</b><br>
+            Contains sample data with employees, departments, projects, and clients.
+            </div>
+            """, unsafe_allow_html=True)
+            
+            if st.button("🚀 Initialize Demo Database", use_container_width=True):
+                with st.spinner("Creating demo database..."):
+                    success = init_sqlite_demo("demo_db.sqlite")
+                    if success:
+                        st.session_state.current_db_path = "demo_db.sqlite"
+                        st.success("✅ Demo database created successfully!")
+                        st.session_state.db_initialized = True
+                    else:
+                        st.error("❌ Failed to create demo database")
+            
+            if st.button("🔗 Connect to Demo DB", use_container_width=True):
+                try:
+                    engine = make_engine(db_type, sqlite_path="demo_db.sqlite")
+                    if engine:
+                        st.session_state.engine = engine
+                        st.session_state.schema_text = get_schema_text(engine)
+                        st.session_state.schema_dict = get_schema_dict(engine)
+                        st.session_state.current_db_path = "demo_db.sqlite"
+                        st.success("✅ Connected to database!")
+                    else:
+                        st.error("❌ Failed to create database engine")
+                except Exception as e:
+                    st.error(f"❌ Connection failed: {e}")
+        
+        else:  # PostgreSQL
+            st.markdown("""
+            <div class='info-box'>
+            <b>PostgreSQL Database</b><br>
+            Connect to your existing PostgreSQL database using a connection string.
+            </div>
+            """, unsafe_allow_html=True)
+            
+            db_url = st.text_input(
+                "PostgreSQL Connection URL", 
+                placeholder="postgresql://username:password@host:port/database"
+            )
+            
+            if st.button("🔗 Connect to PostgreSQL", use_container_width=True) and db_url:
+                try:
+                    engine = make_engine(db_type, url=db_url)
+                    if engine:
+                        st.session_state.engine = engine
+                        st.session_state.schema_text = get_schema_text(engine)
+                        st.session_state.schema_dict = get_schema_dict(engine)
+                        st.success("✅ Connected to PostgreSQL database!")
+                    else:
+                        st.error("❌ Failed to create database engine")
+                except Exception as e:
+                    st.error(f"❌ Connection failed: {e}")
+        
+        # Database status
+        st.markdown("---")
+        st.subheader("📊 Database Status")
+        if st.session_state.engine:
+            st.success("✅ Connected to database")
+            st.info(f"Database: {st.session_state.current_db_path}")
+        else:
+            st.warning("⚠️ No database connected")
+        
+        # Read-only mode toggle
+        st.session_state.read_only_mode = st.checkbox(
+            "🔒 Read-only Mode", 
+            value=st.session_state.read_only_mode,
+            help="Prevents INSERT/UPDATE/DELETE operations for safety"
+        )
+        
+        if not st.session_state.read_only_mode:
+            st.warning("⚠️ Full access mode enabled. Use with caution!")
+        
+        st.markdown("---")
+        st.caption("💡 Tip: Be specific with your questions for better results!")
+        st.caption("Developed by Muhammad Awais Laal")
 
-    else:  # External database
-        db_url = st.sidebar.text_input("Database URL", 
-                                      placeholder="postgresql://user:pass@host:port/dbname or mysql+pymysql://...")
-        if st.sidebar.button("🔗 Connect to External Database") and db_url:
-            try:
-                engine = make_engine(db_type, url=db_url)
-                if engine:
-                    st.session_state.engine = engine
-                    st.session_state.schema_text = get_schema_text(engine)
-                    st.session_state.schema_dict = get_schema_dict(engine)
-                    st.sidebar.success("✅ Connected to external database!")
-                else:
-                    st.sidebar.error("❌ Failed to create database engine")
-            except Exception as e:
-                st.sidebar.error(f"❌ Connection failed: {e}")
-
+    # Main content
+    st.markdown("<h1 class='main-header'>AI Database Assistant</h1>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align: center; font-size: 1.2rem;'>Interact with your database using natural language</p>", unsafe_allow_html=True)
+    
     # Main tabs
     tab1, tab2, tab3 = st.tabs(["🗃️ Create Database", "✏️ Manage Database", "📊 Explore Database"])
 
     # Tab 1: Create Database
     with tab1:
-        st.header("🗃️ Create a New Database")
+        st.markdown("<h2 class='sub-header'>Create a New Database</h2>", unsafe_allow_html=True)
         st.write("Describe your database requirements in plain English")
         
         db_description = st.text_area(
@@ -559,7 +664,7 @@ def main():
                             if execute_schema_creation(schema_sql, db_name):
                                 st.success(f"Database '{db_name}' created successfully!")
                                 try:
-                                    engine = make_engine("SQLite (custom)", sqlite_path=db_name)
+                                    engine = make_engine("SQLite (Demo)", sqlite_path=db_name)
                                     if engine:
                                         st.session_state.engine = engine
                                         st.session_state.schema_text = get_schema_text(engine)
@@ -577,7 +682,7 @@ def main():
 
     # Tab 2: Manage Database
     with tab2:
-        st.header("✏️ Manage Your Database")
+        st.markdown("<h2 class='sub-header'>Manage Your Database</h2>", unsafe_allow_html=True)
         
         if not st.session_state.engine:
             st.warning("Please connect to a database first.")
@@ -586,11 +691,6 @@ def main():
             
             with st.expander("📊 Current Database Schema", expanded=True):
                 st.code(st.session_state.schema_text)
-            
-            read_only = st.checkbox("🔒 Read-only Mode", value=True, 
-                                   help="Prevents INSERT/UPDATE/DELETE operations for safety")
-            if not read_only:
-                st.warning("⚠️ Full access mode enabled. Use with caution!")
             
             management_query = st.text_area(
                 "💬 What would you like to change?",
@@ -606,11 +706,11 @@ def main():
                         ok, raw, cleaned = ask_model_to_sql_llm(
                             management_query, 
                             st.session_state.schema_text, 
-                            read_only
+                            st.session_state.read_only_mode
                         )
                         
                         if ok:
-                            is_valid, message, norm_sql = validate_sql(cleaned, read_only)
+                            is_valid, message, norm_sql = validate_sql(cleaned, st.session_state.read_only_mode)
                             
                             if is_valid:
                                 try:
@@ -636,7 +736,7 @@ def main():
 
     # Tab 3: Explore Database
     with tab3:
-        st.header("📊 Explore Your Database")
+        st.markdown("<h2 class='sub-header'>Explore Your Database</h2>", unsafe_allow_html=True)
         
         if not st.session_state.engine:
             st.warning("Please connect to a database first.")
@@ -741,29 +841,6 @@ def main():
                                 fig = create_visualization(df, chart_type, x_col, y_col, group_by, title)
                                 if fig:
                                     st.plotly_chart(fig, use_container_width=True)
-
-    # Footer
-    st.markdown("---")
-    st.caption("💡 Tip: Be specific with your questions for better results! DEVELOPED By Muhammad Awais Laal")
-
-    # Auto-initialize demo DB if not connected
-    if not st.session_state.engine and db_type == "SQLite (local demo)":
-        if st.sidebar.button("🔄 Auto-setup Demo", help="Automatically setup demo database"):
-            with st.spinner("Setting up demo database..."):
-                success = init_sqlite_demo("demo_db.sqlite")
-                if success:
-                    try:
-                        engine = make_engine(db_type, sqlite_path="demo_db.sqlite")
-                        if engine:
-                            st.session_state.engine = engine
-                            st.session_state.schema_text = get_schema_text(engine)
-                            st.session_state.schema_dict = get_schema_dict(engine)
-                            st.session_state.current_db_path = "demo_db.sqlite"
-                            st.sidebar.success("✅ Demo database setup complete!")
-                        else:
-                            st.sidebar.error("❌ Failed to create database engine")
-                    except Exception as e:
-                        st.sidebar.error(f"❌ Setup failed: {e}")
 
 if __name__ == "__main__":
     main()
