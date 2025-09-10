@@ -5,7 +5,7 @@ import pandas as pd
 import sqlite3
 from sqlalchemy import create_engine, text, inspect, MetaData, Table, Column, String, Integer, Float, DateTime
 import openai
-from datetime import datetime
+from datetime import datetime, date
 from typing import Tuple, Dict, Optional, List
 import tempfile
 import json
@@ -16,6 +16,19 @@ from plotly.subplots import make_subplots
 # ----------------- Config & OpenAI client -----------------
 st.set_page_config(page_title="AI Database Assistant", layout="wide", page_icon="🤖")
 
+# Initialize session state
+if "db_initialized" not in st.session_state:
+    st.session_state.db_initialized = False
+if "engine" not in st.session_state:
+    st.session_state.engine = None
+if "schema_text" not in st.session_state:
+    st.session_state.schema_text = "No DB connected."
+if "schema_dict" not in st.session_state:
+    st.session_state.schema_dict = {}
+if "current_db_path" not in st.session_state:
+    st.session_state.current_db_path = "demo_db.sqlite"
+
+# Set OpenAI API key
 if "OPENAI_API_KEY" in st.secrets:
     openai.api_key = st.secrets["OPENAI_API_KEY"]
 elif os.getenv("OPENAI_API_KEY"):
@@ -28,9 +41,7 @@ else:
 FORBIDDEN = {"DROP", "ALTER", "TRUNCATE", "ATTACH", "DETACH", "VACUUM", "PRAGMA"}
 
 def fix_group_order_aliases(sql: str) -> str:
-    """
-    Remove invalid 'AS alias' inside GROUP BY and ORDER BY clauses produced by the model.
-    """
+    """Remove invalid 'AS alias' inside GROUP BY and ORDER BY clauses."""
     if not sql:
         return sql
     
@@ -43,123 +54,100 @@ def fix_group_order_aliases(sql: str) -> str:
     sql = re.sub(r"GROUP\s+BY\s+[^\n;]+", lambda m: _clean_clause(m), sql, flags=re.IGNORECASE)
     sql = re.sub(r"ORDER\s+BY\s+[^\n;]+", lambda m: _clean_clause(m), sql, flags=re.IGNORECASE)
     sql = re.sub(r"\b([A-Za-z0-9_.]+)\s+AS\s+\1\b", r"\1", sql, flags=re.IGNORECASE)
-
     return sql
 
 # ----------------- DB helpers -----------------
 def init_sqlite_demo(path: str = "demo_db.sqlite"):
-    """Create a small demo SQLite DB if missing."""
-    # Ensure directory exists
+    """Create a demo SQLite DB with sample data."""
     os.makedirs(os.path.dirname(path) if os.path.dirname(path) else '.', exist_ok=True)
     
     conn = sqlite3.connect(path)
     cursor = conn.cursor()
     
-    # Drop tables if they exist to start fresh
-    cursor.execute("DROP TABLE IF EXISTS orders")
-    cursor.execute("DROP TABLE IF EXISTS products")
-    cursor.execute("DROP TABLE IF EXISTS customers")
-    cursor.execute("DROP TABLE IF EXISTS employees")
-    cursor.execute("DROP TABLE IF EXISTS departments")
+    # Drop existing tables
+    tables = ["orders", "products", "customers", "employees", "departments", "projects", "clients", "assignments"]
+    for table in tables:
+        cursor.execute(f"DROP TABLE IF EXISTS {table}")
     
-    # Create tables
+    # Create tables with proper schema
     demo_sql = """
-CREATE TABLE customers (
+CREATE TABLE departments (
     id INTEGER PRIMARY KEY,
-    name TEXT,
-    email TEXT,
-    signup_date TEXT,
-    country TEXT,
-    tier TEXT
-);
-
-CREATE TABLE products (
-    id INTEGER PRIMARY KEY,
-    name TEXT,
-    category TEXT,
-    price REAL,
-    cost REAL,
-    stock_quantity INTEGER
-);
-
-CREATE TABLE orders (
-    id INTEGER PRIMARY KEY,
-    customer_id INTEGER,
-    product_id INTEGER,
-    qty INTEGER,
-    order_date TEXT,
-    status TEXT,
-    total_amount REAL,
-    FOREIGN KEY (customer_id) REFERENCES customers (id),
-    FOREIGN KEY (product_id) REFERENCES products (id)
+    name TEXT NOT NULL,
+    budget REAL
 );
 
 CREATE TABLE employees (
     id INTEGER PRIMARY KEY,
-    name TEXT,
-    department_id INTEGER,
-    hire_date TEXT,
-    salary REAL
+    first_name TEXT NOT NULL,
+    last_name TEXT NOT NULL,
+    email TEXT NOT NULL,
+    phone TEXT,
+    position TEXT NOT NULL,
+    department_id INTEGER NOT NULL,
+    hire_date DATE NOT NULL,
+    salary REAL NOT NULL,
+    FOREIGN KEY (department_id) REFERENCES departments (id)
 );
 
-CREATE TABLE departments (
-    id INTEGER PRIMARY KEY,
-    name TEXT,
-    budget REAL
+CREATE TABLE clients (
+    client_id INTEGER PRIMARY KEY,
+    client_name TEXT NOT NULL,
+    contact_person TEXT,
+    email TEXT,
+    phone TEXT,
+    address TEXT
 );
 
-INSERT INTO customers (name, email, signup_date, country, tier) VALUES
-  ('Alice Smith', 'alice@example.com', '2024-01-15', 'USA', 'Gold'),
-  ('Bob Johnson', 'bob@example.com', '2024-02-20', 'UK', 'Silver'),
-  ('Carol Williams', 'carol@example.com', '2024-03-10', 'Canada', 'Gold'),
-  ('David Brown', 'david@example.com', '2024-04-05', 'Australia', 'Bronze'),
-  ('Eva Davis', 'eva@example.com', '2024-05-12', 'USA', 'Silver'),
-  ('Frank Wilson', 'frank@example.com', '2024-06-18', 'Germany', 'Gold'),
-  ('Grace Lee', 'grace@example.com', '2024-07-22', 'Japan', 'Platinum'),
-  ('Henry Taylor', 'henry@example.com', '2024-08-30', 'France', 'Silver');
+CREATE TABLE projects (
+    project_id INTEGER PRIMARY KEY,
+    project_name TEXT NOT NULL,
+    client_id INTEGER,
+    start_date DATE,
+    end_date DATE,
+    budget REAL,
+    status TEXT,
+    FOREIGN KEY (client_id) REFERENCES clients (client_id)
+);
 
-INSERT INTO products (name, category, price, cost, stock_quantity) VALUES
-  ('Widget A', 'Widgets', 9.99, 5.00, 100),
-  ('Widget B', 'Widgets', 19.99, 10.00, 75),
-  ('Gadget X', 'Gadgets', 29.50, 15.00, 50),
-  ('Gadget Y', 'Gadgets', 39.99, 20.00, 40),
-  ('Tool Z', 'Tools', 15.00, 7.50, 120),
-  ('Software Pro', 'Software', 99.99, 20.00, 200),
-  ('Service Basic', 'Services', 49.99, 10.00, NULL),
-  ('Service Premium', 'Services', 149.99, 30.00, NULL);
+CREATE TABLE assignments (
+    assignment_id INTEGER PRIMARY KEY,
+    employee_id INTEGER NOT NULL,
+    project_id INTEGER NOT NULL,
+    role TEXT NOT NULL,
+    FOREIGN KEY (employee_id) REFERENCES employees (id),
+    FOREIGN KEY (project_id) REFERENCES projects (project_id)
+);
 
-INSERT INTO departments (name, budget) VALUES
-  ('Sales', 100000),
-  ('Marketing', 75000),
-  ('Engineering', 150000),
-  ('Support', 50000);
+-- Insert sample data
+INSERT INTO departments (name, budget) VALUES 
+('Engineering', 500000),
+('Sales', 300000),
+('Marketing', 200000),
+('Support', 150000);
 
-INSERT INTO employees (name, department_id, hire_date, salary) VALUES
-  ('John Manager', 1, '2023-01-15', 75000),
-  ('Jane Analyst', 2, '2023-03-10', 65000),
-  ('Mike Developer', 3, '2023-05-20', 85000),
-  ('Sarah Support', 4, '2023-07-05', 55000),
-  ('Tom Sales', 1, '2023-09-12', 60000),
-  ('Lisa Marketer', 2, '2023-11-30', 70000);
+INSERT INTO employees (first_name, last_name, email, phone, position, department_id, hire_date, salary) VALUES 
+('John', 'Smith', 'john@company.com', '555-0101', 'Senior Developer', 1, '2022-01-15', 95000),
+('Sarah', 'Johnson', 'sarah@company.com', '555-0102', 'Project Manager', 1, '2022-03-10', 85000),
+('Mike', 'Chen', 'mike@company.com', '555-0103', 'Sales Executive', 2, '2022-05-20', 75000),
+('Lisa', 'Rodriguez', 'lisa@company.com', '555-0104', 'Marketing Specialist', 3, '2022-07-05', 65000);
 
-INSERT INTO orders (customer_id, product_id, qty, order_date, status, total_amount) VALUES
-  (1, 1, 3, '2024-06-01', 'Completed', 29.97),
-  (1, 3, 1, '2024-06-15', 'Completed', 29.50),
-  (2, 2, 2, '2024-06-20', 'Completed', 39.98),
-  (2, 4, 1, '2024-07-05', 'Completed', 39.99),
-  (3, 1, 1, '2024-07-10', 'Completed', 9.99),
-  (3, 5, 2, '2024-07-15', 'Completed', 30.00),
-  (4, 3, 1, '2024-08-01', 'Completed', 29.50),
-  (4, 2, 3, '2024-08-10', 'Completed', 59.97),
-  (5, 4, 2, '2024-08-20', 'Completed', 79.98),
-  (5, 1, 1, '2024-09-01', 'Completed', 9.99),
-  (1, 5, 1, '2024-09-05', 'Completed', 15.00),
-  (2, 3, 2, '2024-09-10', 'Completed', 59.00),
-  (6, 6, 1, '2024-09-15', 'Completed', 99.99),
-  ('7', 7, 1, '2024-09-20', 'Completed', 49.99),
-  (8, 8, 1, '2024-09-25', 'Pending', 149.99),
-  (6, 2, 2, '2024-10-01', 'Processing', 39.98),
-  (7, 4, 1, '2024-10-05', 'Processing', 39.99);
+INSERT INTO clients (client_name, contact_person, email, phone, address) VALUES 
+('TechSolutions Inc', 'David Wilson', 'david@techsolutions.com', '555-0201', '123 Tech Ave'),
+('Global Enterprises', 'Maria Garcia', 'maria@globalent.com', '555-0202', '456 Business Blvd'),
+('Northwest Industries', 'Robert Brown', 'robert@nwindustries.com', '555-0203', '789 Industry St');
+
+INSERT INTO projects (project_name, client_id, start_date, end_date, budget, status) VALUES 
+('Website Redesign', 1, '2023-01-15', '2023-06-15', 50000, 'Completed'),
+('Mobile App Development', 2, '2023-03-01', '2023-09-01', 75000, 'In Progress'),
+('Marketing Campaign', 3, '2023-05-01', '2023-08-01', 25000, 'Planning');
+
+INSERT INTO assignments (employee_id, project_id, role) VALUES 
+(1, 1, 'Lead Developer'),
+(2, 1, 'Project Manager'),
+(1, 2, 'Backend Developer'),
+(3, 2, 'Client Liaison'),
+(4, 3, 'Campaign Manager');
 """
     
     try:
@@ -215,6 +203,7 @@ def get_schema_dict(engine) -> Dict[str, list]:
 def extract_sql(model_output: str) -> str:
     if not model_output:
         return ""
+    
     # Remove code fences
     m = re.search(r"```(?:sql)?\s*([\s\S]*?)```", model_output, flags=re.IGNORECASE)
     if m:
@@ -263,90 +252,34 @@ def validate_sql(clean_sql: str, read_only: bool) -> Tuple[bool,str,str]:
         else:
             return False, f"Query type not supported (found: {kw}).", sql
 
-# ----------------- Pivot helpers -----------------
-def infer_date_and_entity(schema: Dict[str, list]) -> Tuple[Optional[str], Optional[str], Optional[str]]:
-    # First check for orders table (most common)
-    if "orders" in schema:
-        cols = schema["orders"]
-        date_col = next((c for c in cols if "date" in c.lower()), "order_date")
-        
-        # Check for customer references
-        if "customer_id" in cols:
-            return "orders", date_col, "customer_id"
-        elif "product_id" in cols:
-            return "orders", date_col, "product_id"
-    
-    # Check for other tables with date columns
-    for table, cols in schema.items():
-        date_col = next((c for c in cols if "date" in c.lower()), None)
-        if date_col:
-            # Look for entity columns
-            entity_col = next((c for c in cols if any(keyword in c.lower() for keyword in 
-                                                     ["name", "id", "product", "customer", "client", "user"])), None)
-            return table, date_col, entity_col
-    
-    return None, None, None
-
-def build_year_pivot_sql(table: str, date_col: str, entity_col: str, year: str, schema: Dict[str, list]) -> str:
-    # Handle entity column mapping
-    if entity_col and entity_col.endswith("_id"):
-        base_table = entity_col.replace("_id", "")
-        if base_table in schema:
-            join_clause = f"LEFT JOIN {base_table} ON {table}.{entity_col} = {base_table}.id"
-            select_entity = f"{base_table}.name AS {base_table}_name"
-            group_by_entity = f"{base_table}.name"
-        else:
-            join_clause = ""
-            select_entity = f"{table}.{entity_col}"
-            group_by_entity = f"{table}.{entity_col}"
-    else:
-        join_clause = ""
-        select_entity = f"{table}.{entity_col}" if entity_col else "1"
-        group_by_entity = select_entity
-
-    # Build monthly cases
-    month_cases = []
-    for m in range(1, 13):
-        month_str = f"{m:02d}"
-        month_name = datetime(2024, m, 1).strftime("%b")
-        month_cases.append(f"SUM(CASE WHEN strftime('%m', {table}.{date_col}) = '{month_str}' THEN COALESCE({table}.qty, 1) ELSE 0 END) AS \"{month_name}\"")
-
-    cases_sql = ",\n    ".join(month_cases)
-    
-    sql = f"""SELECT
-    {select_entity},
-    {cases_sql}
-FROM {table}
-{join_clause}
-WHERE strftime('%Y', {table}.{date_col}) = '{year}'
-GROUP BY {group_by_entity}
-ORDER BY {group_by_entity};"""
-    
-    return sql
-
-# ----------------- Model prompt / SQL generation -----------------
-def ask_model_to_sql_llm(nl_request: str, schema_text: str, read_only: bool, prefer_full_columns: bool = True) -> Tuple[bool, str, str]:
-    """
-    Use the LLM to generate SQL. Returns (ok, raw_output, cleaned_sql).
-    """
+# ----------------- Enhanced Model prompt / SQL generation -----------------
+def ask_model_to_sql_llm(nl_request: str, schema_text: str, read_only: bool) -> Tuple[bool, str, str]:
+    """Use the LLM to generate SQL with enhanced understanding."""
     if not nl_request.strip():
         return False, "Empty natural language request.", ""
 
-    system_msg = """You are an expert SQL assistant. Respond with a single SQL statement only (no explanation). 
-Default dialect: SQLite. IMPORTANT RULES:
+    system_msg = """You are an expert SQL assistant that understands natural language perfectly. 
+Respond with a single SQL statement only (no explanation). 
+Default dialect: SQLite. 
+
+CRITICAL RULES:
 1. Never use 'AS' inside GROUP BY or ORDER BY clauses
 2. Use explicit table.column references when needed
-3. When user says 'clients', use 'customers' table
-4. When user says 'client_id', use 'customer_id' column
-5. Use proper date formatting for SQLite: strftime() functions
-6. Always include required fields like hire_date for Employees table"""
+3. Always include all required NOT NULL fields in INSERT statements
+4. Use proper date formatting for SQLite: date('now') or specific dates
+5. For Employees: always include first_name, last_name, email, position, department_id, hire_date, salary
+6. For Projects: always include project_name, client_id is optional but recommended
+7. For Assignments: always include employee_id, project_id, role
+8. For Clients: always include client_name
+
+Understand user intent perfectly and generate accurate SQL."""
 
     user_msg = f"""Database schema:
 {schema_text}
 
 User request: {nl_request}
 
-Generate a clean SQL query that answers the user's request. 
+Generate a perfect SQL query that exactly matches the user's intent. 
 Return only the SQL statement without any explanations or code fences."""
 
     try:
@@ -356,8 +289,8 @@ Return only the SQL statement without any explanations or code fences."""
                 {"role": "system", "content": system_msg},
                 {"role": "user", "content": user_msg}
             ],
-            temperature=0,
-            max_tokens=500,
+            temperature=0.1,
+            max_tokens=800,
         )
         raw = resp['choices'][0]['message']['content']
         cleaned = extract_sql(raw)
@@ -367,21 +300,19 @@ Return only the SQL statement without any explanations or code fences."""
 
 # ----------------- Database Creation Functions -----------------
 def generate_database_schema_from_description(description: str) -> Tuple[bool, str, str]:
-    """
-    Generate a database schema from a natural language description.
-    Returns (success, schema_sql, error_message)
-    """
-    system_msg = """You are an expert database architect. Based on the user's description of their business or data needs,
-generate a complete SQLite database schema with appropriate tables, columns, and relationships.
+    """Generate a database schema from natural language description."""
+    system_msg = """You are an expert database architect. Create complete SQLite database schema.
 
-Include:
-1. All necessary tables with appropriate columns and data types
-2. Primary keys and foreign key relationships
-3. Sample data insertion statements for at least 5 rows per table
-4. Comments explaining the purpose of each table
-5. Make sure to include all required fields and NOT NULL constraints where appropriate
+ESSENTIAL REQUIREMENTS:
+1. All tables must have proper PRIMARY KEYs
+2. Include all necessary NOT NULL constraints
+3. Add appropriate FOREIGN KEY relationships
+4. Include sample data with all required fields
+5. Ensure data integrity and relationships work properly
+6. Use proper SQLite data types (INTEGER, TEXT, REAL, DATE)
+7. Include at least 3-5 sample records per table
 
-Return only the SQL code without any explanations or markdown formatting."""
+Return only the SQL code without any explanations."""
 
     try:
         resp = openai.ChatCompletion.create(
@@ -391,7 +322,7 @@ Return only the SQL code without any explanations or markdown formatting."""
                 {"role": "user", "content": description}
             ],
             temperature=0.1,
-            max_tokens=2000,
+            max_tokens=2500,
         )
         sql_code = resp['choices'][0]['message']['content']
         # Clean up the SQL code
@@ -402,11 +333,8 @@ Return only the SQL code without any explanations or markdown formatting."""
         return False, "", f"Error generating schema: {e}"
 
 def execute_schema_creation(sql_code: str, db_path: str = "custom_db.sqlite") -> bool:
-    """
-    Execute the SQL schema creation code.
-    """
+    """Execute the SQL schema creation code."""
     try:
-        # Ensure directory exists
         os.makedirs(os.path.dirname(db_path) if os.path.dirname(db_path) else '.', exist_ok=True)
         
         conn = sqlite3.connect(db_path)
@@ -419,17 +347,12 @@ def execute_schema_creation(sql_code: str, db_path: str = "custom_db.sqlite") ->
         return True
     except Exception as e:
         st.error(f"Error creating database: {e}")
-        # Try to provide more specific error message
-        if "NOT NULL" in str(e):
-            st.error("Error: Missing required field. Make sure all required fields are provided in sample data.")
         return False
 
 # ----------------- Data Visualization Functions -----------------
 def create_visualization(df: pd.DataFrame, chart_type: str, x_col: str, y_col: str = None, 
                         group_by: str = None, title: str = None):
-    """
-    Create various types of visualizations from DataFrame.
-    """
+    """Create various types of visualizations from DataFrame."""
     try:
         if chart_type == "Bar Chart":
             if group_by:
@@ -456,7 +379,6 @@ def create_visualization(df: pd.DataFrame, chart_type: str, x_col: str, y_col: s
             fig = px.histogram(df, x=x_col, title=title or f"Distribution of {x_col}")
             
         elif chart_type == "Heatmap":
-            # For heatmap, we need a pivot table
             if group_by and y_col:
                 pivot_df = df.pivot_table(values=y_col, index=x_col, columns=group_by, aggfunc='sum')
                 fig = px.imshow(pivot_df, title=title or f"Heatmap of {y_col} by {x_col} and {group_by}")
@@ -475,10 +397,7 @@ def create_visualization(df: pd.DataFrame, chart_type: str, x_col: str, y_col: s
         return None
 
 def generate_insights_from_data(df: pd.DataFrame, table_name: str = None) -> str:
-    """
-    Use AI to generate insights from the data.
-    """
-    # Create a summary of the data
+    """Use AI to generate insights from the data."""
     summary = f"""
     Table: {table_name or 'Unknown'}
     Shape: {df.shape[0]} rows, {df.shape[1]} columns
@@ -486,8 +405,8 @@ def generate_insights_from_data(df: pd.DataFrame, table_name: str = None) -> str
     Sample data: {df.head(3).to_string()}
     """
     
-    system_msg = """You are a data analyst. Based on the provided dataset summary, generate 3-5 key insights about the data.
-Focus on trends, patterns, anomalies, and business implications. Keep each insight concise and actionable."""
+    system_msg = """You are a data analyst. Generate 3-5 key insights about the data.
+Focus on trends, patterns, anomalies, and business implications. Keep insights concise and actionable."""
 
     try:
         resp = openai.ChatCompletion.create(
@@ -503,24 +422,10 @@ Focus on trends, patterns, anomalies, and business implications. Keep each insig
     except Exception as e:
         return f"Error generating insights: {e}"
 
-# ----------------- UI Setup -----------------
+# ----------------- Enhanced UI with better error handling -----------------
 def main():
     st.sidebar.header("🔧 Database Configuration")
     db_type = st.sidebar.selectbox("Database Type", ["SQLite (local demo)", "SQLite (custom)", "Postgres / MySQL (custom URL)"])
-
-    # Initialize session state
-    if "db_initialized" not in st.session_state:
-        st.session_state.db_initialized = False
-    if "engine" not in st.session_state:
-        st.session_state.engine = None
-    if "schema_text" not in st.session_state:
-        st.session_state.schema_text = "No DB connected."
-    if "schema_dict" not in st.session_state:
-        st.session_state.schema_dict = {}
-    if "current_db_path" not in st.session_state:
-        st.session_state.current_db_path = "demo_db.sqlite"
-    if "active_tab" not in st.session_state:
-        st.session_state.active_tab = "Create Database"
 
     # Database connection setup
     if db_type == "SQLite (local demo)":
@@ -580,12 +485,12 @@ def main():
     # Tab 1: Create Database
     with tab1:
         st.header("🗃️ Create a New Database")
-        st.write("Describe your database requirements in plain English, and we'll generate a complete database schema for you.")
+        st.write("Describe your database requirements in plain English")
         
         db_description = st.text_area(
             "Describe your database needs:",
             height=150,
-            placeholder="e.g., 'I need a database for my software company with tables for employees, projects, clients, and invoices. Employees have names, roles, and salaries. Projects have names, deadlines, and budgets. Clients have company names and contact information. Invoices have amounts, dates, and status.'"
+            placeholder="e.g., 'I need a database for my software company with tables for employees, projects, clients, and assignments. Employees should have names, emails, positions, departments, salaries, and hire dates...'"
         )
         
         db_name = st.text_input("Database Name", value="my_database.sqlite")
@@ -602,12 +507,9 @@ def main():
                         with st.expander("View Generated Schema"):
                             st.code(schema_sql, language="sql")
                         
-                        # Execute the schema creation
                         with st.spinner("Creating database..."):
                             if execute_schema_creation(schema_sql, db_name):
                                 st.success(f"Database '{db_name}' created successfully!")
-                                
-                                # Connect to the new database
                                 try:
                                     engine = make_engine("SQLite (local demo)", sqlite_path=db_name)
                                     st.session_state.engine = engine
@@ -618,7 +520,7 @@ def main():
                                 except Exception as e:
                                     st.error(f"Connected but encountered error: {e}")
                             else:
-                                st.error("Failed to create database. Please check that all required fields are included.")
+                                st.error("Failed to create database. Please check the schema for errors.")
                     else:
                         st.error(f"Failed to generate schema: {error}")
 
@@ -629,23 +531,20 @@ def main():
         if not st.session_state.engine:
             st.warning("Please connect to a database first.")
         else:
-            st.write("Use natural language to modify your database.")
+            st.write("Use natural language to modify your database")
             
-            # Display schema
             with st.expander("📊 Current Database Schema", expanded=True):
                 st.code(st.session_state.schema_text)
             
-            # Read-only mode toggle
             read_only = st.checkbox("🔒 Read-only Mode", value=False, 
                                    help="Prevents INSERT/UPDATE/DELETE operations for safety")
             if not read_only:
                 st.warning("⚠️ Full access mode enabled. Use with caution!")
             
-            # Management query input
             management_query = st.text_area(
                 "💬 What would you like to change?",
                 height=100,
-                placeholder="e.g., 'Add a new customer named John Doe with email john@example.com', 'Update product prices to increase by 10%', 'Delete all orders from last month'"
+                placeholder="e.g., 'Add a new employee named Alex Johnson as Developer with email alex@company.com, salary $85000, department Engineering, hired today'"
             )
             
             if st.button("Execute Change", type="primary"):
@@ -660,23 +559,20 @@ def main():
                         )
                         
                         if ok:
-                            # Validate the SQL
                             is_valid, message, norm_sql = validate_sql(cleaned, read_only)
                             
                             if is_valid:
                                 try:
-                                    # Execute the SQL
                                     with st.session_state.engine.connect() as conn:
                                         result = conn.execute(text(norm_sql))
                                         conn.commit()
                                     
                                     st.success("✅ Change executed successfully!")
                                     
-                                    # Refresh schema if structure changed
-                                    if any(keyword in norm_sql.upper() for keyword in ["CREATE", "ALTER", "DROP"]):
-                                        st.session_state.schema_text = get_schema_text(st.session_state.engine)
-                                        st.session_state.schema_dict = get_schema_dict(st.session_state.engine)
-                                        st.rerun()
+                                    # Refresh schema and data
+                                    st.session_state.schema_text = get_schema_text(st.session_state.engine)
+                                    st.session_state.schema_dict = get_schema_dict(st.session_state.engine)
+                                    st.rerun()
                                     
                                 except Exception as e:
                                     st.error(f"❌ Execution failed: {e}")
@@ -694,15 +590,13 @@ def main():
         if not st.session_state.engine:
             st.warning("Please connect to a database first.")
         else:
-            # Display schema
             with st.expander("📊 Database Schema", expanded=True):
                 st.code(st.session_state.schema_text)
             
-            # Exploration query input
             exploration_query = st.text_area(
                 "💬 What would you like to explore?",
                 height=100,
-                placeholder="e.g., 'Show me monthly sales trends', 'Compare product categories by revenue', 'List top 5 customers by spending'"
+                placeholder="e.g., 'Show me all employees with their departments and salaries', 'List projects with their budgets and status', 'Find employees earning more than $80000'"
             )
             
             col1, col2 = st.columns([1, 1])
@@ -716,14 +610,10 @@ def main():
                             ok, raw, cleaned = ask_model_to_sql_llm(
                                 exploration_query, 
                                 st.session_state.schema_text, 
-                                True  # Read-only for exploration
+                                True
                             )
                             
                             if ok:
-                                st.session_state.exploration_sql = cleaned
-                                st.session_state.exploration_raw = raw
-                                
-                                # Validate and execute
                                 is_valid, message, norm_sql = validate_sql(cleaned, True)
                                 
                                 if is_valid:
@@ -733,11 +623,8 @@ def main():
                                         st.session_state.exploration_sql_executed = norm_sql
                                         
                                         st.success(f"✅ Query executed successfully! Returned {len(df)} rows.")
-                                        
-                                        # Display results
                                         st.dataframe(df, use_container_width=True)
                                         
-                                        # Add to history
                                         if "exploration_history" not in st.session_state:
                                             st.session_state.exploration_history = []
                                         st.session_state.exploration_history.append({
@@ -762,13 +649,11 @@ def main():
                     else:
                         df = st.session_state.exploration_df
                         
-                        # Generate insights
                         with st.spinner("Generating insights..."):
                             insights = generate_insights_from_data(df, "Query Results")
                             st.subheader("💡 Data Insights")
                             st.write(insights)
                         
-                        # Visualization options
                         st.subheader("📊 Visualization Options")
                         
                         numeric_cols = df.select_dtypes(include=['number']).columns.tolist()
@@ -782,7 +667,7 @@ def main():
                             with col1:
                                 chart_type = st.selectbox(
                                     "Chart Type",
-                                    ["Bar Chart", "Line Chart", "Pie Chart", "Scatter Plot", "Histogram", "Heatmap"]
+                                    ["Bar Chart", "Line Chart", "Pie Chart", "Scatter Plot", "Histogram"]
                                 )
                             
                             with col2:
@@ -805,23 +690,10 @@ def main():
                                 fig = create_visualization(df, chart_type, x_col, y_col, group_by, title)
                                 if fig:
                                     st.plotly_chart(fig, use_container_width=True)
-            
-            # Show query history
-            if st.session_state.get("exploration_history"):
-                with st.expander("🕒 Exploration History", expanded=False):
-                    for i, entry in enumerate(reversed(st.session_state.exploration_history[-5:])):
-                        cols = st.columns([4, 1])
-                        with cols[0]:
-                            st.code(entry["query"], language="sql")
-                            st.caption(f"Rows: {entry['rows']} • {entry['timestamp'][:19]}")
-                        with cols[1]:
-                            if st.button("↩️ Load", key=f"load_ex_{i}"):
-                                st.session_state.exploration_sql = entry["query"]
-                                st.rerun()
 
     # Footer
     st.markdown("---")
-    st.caption("💡 Tip: Be specific with your questions for better results! Include timeframes, entities, and what you want to see. DEVELOPED By Muhammad Awais Laal")
+    st.caption("💡 Tip: Be specific with your questions for better results! DEVELOPED By Muhammad Awais Laal")
 
     # Auto-initialize demo DB if not connected
     if not st.session_state.engine and db_type == "SQLite (local demo)":
