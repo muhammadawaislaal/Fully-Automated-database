@@ -3,18 +3,21 @@ import re
 import streamlit as st
 import pandas as pd
 import sqlite3
-from sqlalchemy import create_engine, text, inspect, MetaData, Table, Column, String, Integer, Float, DateTime
+from sqlalchemy import create_engine, text, inspect
 import openai
-from datetime import datetime, date
+from datetime import datetime
 from typing import Tuple, Dict, Optional, List
-import tempfile
-import json
 import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 # ----------------- Config & OpenAI client -----------------
-st.set_page_config(page_title="AI Database Assistant", layout="wide", page_icon="🤖")
+st.set_page_config(
+    page_title="AI Database Assistant", 
+    layout="wide", 
+    page_icon="🤖",
+    initial_sidebar_state="expanded"
+)
 
 # Initialize session state
 if "db_initialized" not in st.session_state:
@@ -27,14 +30,22 @@ if "schema_dict" not in st.session_state:
     st.session_state.schema_dict = {}
 if "current_db_path" not in st.session_state:
     st.session_state.current_db_path = "demo_db.sqlite"
+if "exploration_df" not in st.session_state:
+    st.session_state.exploration_df = pd.DataFrame()
+if "exploration_history" not in st.session_state:
+    st.session_state.exploration_history = []
 
 # Set OpenAI API key
-if "OPENAI_API_KEY" in st.secrets:
-    openai.api_key = st.secrets["OPENAI_API_KEY"]
-elif os.getenv("OPENAI_API_KEY"):
-    openai.api_key = os.getenv("OPENAI_API_KEY")
-else:
-    st.error("No OpenAI API key found. Add OPENAI_API_KEY in Streamlit Secrets or environment.")
+try:
+    if "OPENAI_API_KEY" in st.secrets:
+        openai.api_key = st.secrets["OPENAI_API_KEY"]
+    elif os.getenv("OPENAI_API_KEY"):
+        openai.api_key = os.getenv("OPENAI_API_KEY")
+    else:
+        st.error("No OpenAI API key found. Add OPENAI_API_KEY in Streamlit Secrets or environment.")
+        st.stop()
+except Exception as e:
+    st.error(f"Error setting up OpenAI API: {e}")
     st.stop()
 
 # ----------------- Utility / safety -----------------
@@ -57,20 +68,21 @@ def fix_group_order_aliases(sql: str) -> str:
     return sql
 
 # ----------------- DB helpers -----------------
-def init_sqlite_demo(path: str = "demo_db.sqlite"):
+def init_sqlite_demo(path: str = "demo_db.sqlite") -> bool:
     """Create a demo SQLite DB with sample data."""
-    os.makedirs(os.path.dirname(path) if os.path.dirname(path) else '.', exist_ok=True)
-    
-    conn = sqlite3.connect(path)
-    cursor = conn.cursor()
-    
-    # Drop existing tables
-    tables = ["orders", "products", "customers", "employees", "departments", "projects", "clients", "assignments"]
-    for table in tables:
-        cursor.execute(f"DROP TABLE IF EXISTS {table}")
-    
-    # Create tables with proper schema
-    demo_sql = """
+    try:
+        os.makedirs(os.path.dirname(path) if os.path.dirname(path) else '.', exist_ok=True)
+        
+        conn = sqlite3.connect(path)
+        cursor = conn.cursor()
+        
+        # Drop existing tables
+        tables = ["orders", "products", "customers", "employees", "departments", "projects", "clients", "assignments"]
+        for table in tables:
+            cursor.execute(f"DROP TABLE IF EXISTS {table}")
+        
+        # Create tables with proper schema
+        demo_sql = """
 CREATE TABLE departments (
     id INTEGER PRIMARY KEY,
     name TEXT NOT NULL,
@@ -120,55 +132,57 @@ CREATE TABLE assignments (
 );
 
 -- Insert sample data
-INSERT INTO departments (name, budget) VALUES 
-('Engineering', 500000),
-('Sales', 300000),
-('Marketing', 200000),
-('Support', 150000);
+INSERT INTO departments (id, name, budget) VALUES 
+(1, 'Engineering', 500000),
+(2, 'Sales', 300000),
+(3, 'Marketing', 200000),
+(4, 'Support', 150000);
 
-INSERT INTO employees (first_name, last_name, email, phone, position, department_id, hire_date, salary) VALUES 
-('John', 'Smith', 'john@company.com', '555-0101', 'Senior Developer', 1, '2022-01-15', 95000),
-('Sarah', 'Johnson', 'sarah@company.com', '555-0102', 'Project Manager', 1, '2022-03-10', 85000),
-('Mike', 'Chen', 'mike@company.com', '555-0103', 'Sales Executive', 2, '2022-05-20', 75000),
-('Lisa', 'Rodriguez', 'lisa@company.com', '555-0104', 'Marketing Specialist', 3, '2022-07-05', 65000);
+INSERT INTO employees (id, first_name, last_name, email, phone, position, department_id, hire_date, salary) VALUES 
+(1, 'John', 'Smith', 'john@company.com', '555-0101', 'Senior Developer', 1, '2022-01-15', 95000),
+(2, 'Sarah', 'Johnson', 'sarah@company.com', '555-0102', 'Project Manager', 1, '2022-03-10', 85000),
+(3, 'Mike', 'Chen', 'mike@company.com', '555-0103', 'Sales Executive', 2, '2022-05-20', 75000),
+(4, 'Lisa', 'Rodriguez', 'lisa@company.com', '555-0104', 'Marketing Specialist', 3, '2022-07-05', 65000);
 
-INSERT INTO clients (client_name, contact_person, email, phone, address) VALUES 
-('TechSolutions Inc', 'David Wilson', 'david@techsolutions.com', '555-0201', '123 Tech Ave'),
-('Global Enterprises', 'Maria Garcia', 'maria@globalent.com', '555-0202', '456 Business Blvd'),
-('Northwest Industries', 'Robert Brown', 'robert@nwindustries.com', '555-0203', '789 Industry St');
+INSERT INTO clients (client_id, client_name, contact_person, email, phone, address) VALUES 
+(1, 'TechSolutions Inc', 'David Wilson', 'david@techsolutions.com', '555-0201', '123 Tech Ave'),
+(2, 'Global Enterprises', 'Maria Garcia', 'maria@globalent.com', '555-0202', '456 Business Blvd'),
+(3, 'Northwest Industries', 'Robert Brown', 'robert@nwindustries.com', '555-0203', '789 Industry St');
 
-INSERT INTO projects (project_name, client_id, start_date, end_date, budget, status) VALUES 
-('Website Redesign', 1, '2023-01-15', '2023-06-15', 50000, 'Completed'),
-('Mobile App Development', 2, '2023-03-01', '2023-09-01', 75000, 'In Progress'),
-('Marketing Campaign', 3, '2023-05-01', '2023-08-01', 25000, 'Planning');
+INSERT INTO projects (project_id, project_name, client_id, start_date, end_date, budget, status) VALUES 
+(1, 'Website Redesign', 1, '2023-01-15', '2023-06-15', 50000, 'Completed'),
+(2, 'Mobile App Development', 2, '2023-03-01', '2023-09-01', 75000, 'In Progress'),
+(3, 'Marketing Campaign', 3, '2023-05-01', '2023-08-01', 25000, 'Planning');
 
-INSERT INTO assignments (employee_id, project_id, role) VALUES 
-(1, 1, 'Lead Developer'),
-(2, 1, 'Project Manager'),
-(1, 2, 'Backend Developer'),
-(3, 2, 'Client Liaison'),
-(4, 3, 'Campaign Manager');
+INSERT INTO assignments (assignment_id, employee_id, project_id, role) VALUES 
+(1, 1, 1, 'Lead Developer'),
+(2, 2, 1, 'Project Manager'),
+(3, 1, 2, 'Backend Developer'),
+(4, 3, 2, 'Client Liaison'),
+(5, 4, 3, 'Campaign Manager');
 """
-    
-    try:
+        
         cursor.executescript(demo_sql)
         conn.commit()
+        conn.close()
         return True
     except Exception as e:
         st.error(f"Error creating demo database: {e}")
         return False
-    finally:
-        conn.close()
 
 def make_engine(db_type: str, sqlite_path: str = None, url: str = None):
-    if db_type == "SQLite (local demo)":
-        if not sqlite_path:
-            sqlite_path = "demo_db.sqlite"
-        return create_engine(f"sqlite:///{sqlite_path}", connect_args={"check_same_thread": False})
-    else:
-        if not url:
-            raise ValueError("No connection URL provided.")
-        return create_engine(url)
+    try:
+        if db_type == "SQLite (local demo)" or db_type == "SQLite (custom)":
+            if not sqlite_path:
+                sqlite_path = "demo_db.sqlite"
+            return create_engine(f"sqlite:///{sqlite_path}", connect_args={"check_same_thread": False})
+        else:
+            if not url:
+                raise ValueError("No connection URL provided.")
+            return create_engine(url)
+    except Exception as e:
+        st.error(f"Error creating database engine: {e}")
+        return None
 
 def get_schema_text(engine) -> str:
     try:
@@ -219,7 +233,7 @@ def extract_sql(model_output: str) -> str:
     
     return model_output.strip()
 
-def validate_sql(clean_sql: str, read_only: bool) -> Tuple[bool,str,str]:
+def validate_sql(clean_sql: str, read_only: bool) -> Tuple[bool, str, str]:
     if not clean_sql:
         return False, "Empty query.", ""
     
@@ -355,33 +369,50 @@ def create_visualization(df: pd.DataFrame, chart_type: str, x_col: str, y_col: s
     """Create various types of visualizations from DataFrame."""
     try:
         if chart_type == "Bar Chart":
-            if group_by:
+            if group_by and y_col:
                 fig = px.bar(df, x=x_col, y=y_col, color=group_by, title=title or f"{y_col} by {x_col}")
-            else:
+            elif y_col:
                 fig = px.bar(df, x=x_col, y=y_col, title=title or f"{y_col} by {x_col}")
+            else:
+                fig = px.bar(df, x=x_col, title=title or f"Count by {x_col}")
                 
         elif chart_type == "Line Chart":
-            if group_by:
+            if group_by and y_col:
                 fig = px.line(df, x=x_col, y=y_col, color=group_by, title=title or f"{y_col} over {x_col}")
-            else:
+            elif y_col:
                 fig = px.line(df, x=x_col, y=y_col, title=title or f"{y_col} over {x_col}")
+            else:
+                st.warning("Line chart requires a Y-axis column")
+                return None
                 
         elif chart_type == "Pie Chart":
-            fig = px.pie(df, names=x_col, values=y_col, title=title or f"Distribution of {y_col} by {x_col}")
+            if y_col:
+                fig = px.pie(df, names=x_col, values=y_col, title=title or f"Distribution of {y_col} by {x_col}")
+            else:
+                st.warning("Pie chart requires a values column")
+                return None
             
         elif chart_type == "Scatter Plot":
-            if group_by:
-                fig = px.scatter(df, x=x_col, y=y_col, color=group_by, title=title or f"{y_col} vs {x_col}")
+            if y_col:
+                if group_by:
+                    fig = px.scatter(df, x=x_col, y=y_col, color=group_by, title=title or f"{y_col} vs {x_col}")
+                else:
+                    fig = px.scatter(df, x=x_col, y=y_col, title=title or f"{y_col} vs {x_col}")
             else:
-                fig = px.scatter(df, x=x_col, y=y_col, title=title or f"{y_col} vs {x_col}")
+                st.warning("Scatter plot requires a Y-axis column")
+                return None
                 
         elif chart_type == "Histogram":
             fig = px.histogram(df, x=x_col, title=title or f"Distribution of {x_col}")
             
         elif chart_type == "Heatmap":
             if group_by and y_col:
-                pivot_df = df.pivot_table(values=y_col, index=x_col, columns=group_by, aggfunc='sum')
-                fig = px.imshow(pivot_df, title=title or f"Heatmap of {y_col} by {x_col} and {group_by}")
+                try:
+                    pivot_df = df.pivot_table(values=y_col, index=x_col, columns=group_by, aggfunc='sum')
+                    fig = px.imshow(pivot_df, title=title or f"Heatmap of {y_col} by {x_col} and {group_by}")
+                except Exception:
+                    st.warning("Could not create heatmap with selected columns")
+                    return None
             else:
                 st.warning("Heatmap requires both x column and group by column")
                 return None
@@ -398,6 +429,9 @@ def create_visualization(df: pd.DataFrame, chart_type: str, x_col: str, y_col: s
 
 def generate_insights_from_data(df: pd.DataFrame, table_name: str = None) -> str:
     """Use AI to generate insights from the data."""
+    if df.empty:
+        return "No data available for analysis."
+    
     summary = f"""
     Table: {table_name or 'Unknown'}
     Shape: {df.shape[0]} rows, {df.shape[1]} columns
@@ -444,11 +478,14 @@ def main():
         if st.sidebar.button("🔗 Connect to Database"):
             try:
                 engine = make_engine(db_type, sqlite_path=sqlite_path)
-                st.session_state.engine = engine
-                st.session_state.schema_text = get_schema_text(engine)
-                st.session_state.schema_dict = get_schema_dict(engine)
-                st.session_state.current_db_path = sqlite_path
-                st.sidebar.success("✅ Connected to database!")
+                if engine:
+                    st.session_state.engine = engine
+                    st.session_state.schema_text = get_schema_text(engine)
+                    st.session_state.schema_dict = get_schema_dict(engine)
+                    st.session_state.current_db_path = sqlite_path
+                    st.sidebar.success("✅ Connected to database!")
+                else:
+                    st.sidebar.error("❌ Failed to create database engine")
             except Exception as e:
                 st.sidebar.error(f"❌ Connection failed: {e}")
 
@@ -458,11 +495,14 @@ def main():
         
         if st.sidebar.button("🔗 Connect to Custom Database"):
             try:
-                engine = make_engine("SQLite (local demo)", sqlite_path=custom_db_path)
-                st.session_state.engine = engine
-                st.session_state.schema_text = get_schema_text(engine)
-                st.session_state.schema_dict = get_schema_dict(engine)
-                st.sidebar.success("✅ Connected to custom database!")
+                engine = make_engine(db_type, sqlite_path=custom_db_path)
+                if engine:
+                    st.session_state.engine = engine
+                    st.session_state.schema_text = get_schema_text(engine)
+                    st.session_state.schema_dict = get_schema_dict(engine)
+                    st.sidebar.success("✅ Connected to custom database!")
+                else:
+                    st.sidebar.error("❌ Failed to create database engine")
             except Exception as e:
                 st.sidebar.error(f"❌ Connection failed: {e}")
 
@@ -472,10 +512,13 @@ def main():
         if st.sidebar.button("🔗 Connect to External Database") and db_url:
             try:
                 engine = make_engine(db_type, url=db_url)
-                st.session_state.engine = engine
-                st.session_state.schema_text = get_schema_text(engine)
-                st.session_state.schema_dict = get_schema_dict(engine)
-                st.sidebar.success("✅ Connected to external database!")
+                if engine:
+                    st.session_state.engine = engine
+                    st.session_state.schema_text = get_schema_text(engine)
+                    st.session_state.schema_dict = get_schema_dict(engine)
+                    st.sidebar.success("✅ Connected to external database!")
+                else:
+                    st.sidebar.error("❌ Failed to create database engine")
             except Exception as e:
                 st.sidebar.error(f"❌ Connection failed: {e}")
 
@@ -511,12 +554,15 @@ def main():
                             if execute_schema_creation(schema_sql, db_name):
                                 st.success(f"Database '{db_name}' created successfully!")
                                 try:
-                                    engine = make_engine("SQLite (local demo)", sqlite_path=db_name)
-                                    st.session_state.engine = engine
-                                    st.session_state.schema_text = get_schema_text(engine)
-                                    st.session_state.schema_dict = get_schema_dict(engine)
-                                    st.session_state.current_db_path = db_name
-                                    st.success("✅ Connected to your new database!")
+                                    engine = make_engine("SQLite (custom)", sqlite_path=db_name)
+                                    if engine:
+                                        st.session_state.engine = engine
+                                        st.session_state.schema_text = get_schema_text(engine)
+                                        st.session_state.schema_dict = get_schema_dict(engine)
+                                        st.session_state.current_db_path = db_name
+                                        st.success("✅ Connected to your new database!")
+                                    else:
+                                        st.error("Failed to connect to the new database")
                                 except Exception as e:
                                     st.error(f"Connected but encountered error: {e}")
                             else:
@@ -536,7 +582,7 @@ def main():
             with st.expander("📊 Current Database Schema", expanded=True):
                 st.code(st.session_state.schema_text)
             
-            read_only = st.checkbox("🔒 Read-only Mode", value=False, 
+            read_only = st.checkbox("🔒 Read-only Mode", value=True, 
                                    help="Prevents INSERT/UPDATE/DELETE operations for safety")
             if not read_only:
                 st.warning("⚠️ Full access mode enabled. Use with caution!")
@@ -659,27 +705,27 @@ def main():
                         numeric_cols = df.select_dtypes(include=['number']).columns.tolist()
                         categorical_cols = df.select_dtypes(include=['object', 'category']).columns.tolist()
                         
-                        if not numeric_cols:
-                            st.warning("No numeric columns found for visualization.")
+                        if not numeric_cols and not categorical_cols:
+                            st.warning("No suitable columns found for visualization.")
                         else:
                             col1, col2, col3 = st.columns(3)
                             
                             with col1:
                                 chart_type = st.selectbox(
                                     "Chart Type",
-                                    ["Bar Chart", "Line Chart", "Pie Chart", "Scatter Plot", "Histogram"]
+                                    ["Bar Chart", "Line Chart", "Pie Chart", "Scatter Plot", "Histogram", "Heatmap"]
                                 )
                             
                             with col2:
                                 x_col = st.selectbox("X Axis", df.columns.tolist(), index=0)
                             
                             with col3:
-                                if chart_type in ["Bar Chart", "Line Chart", "Scatter Plot", "Pie Chart"]:
-                                    y_col = st.selectbox("Y Axis", numeric_cols, index=0 if numeric_cols else None)
+                                if chart_type in ["Bar Chart", "Line Chart", "Scatter Plot", "Pie Chart"] and numeric_cols:
+                                    y_col = st.selectbox("Y Axis", numeric_cols, index=0)
                                 else:
                                     y_col = None
                             
-                            if chart_type in ["Bar Chart", "Line Chart", "Scatter Plot"] and len(df.columns) > 2:
+                            if chart_type in ["Bar Chart", "Line Chart", "Scatter Plot"] and len(df.columns) > 2 and categorical_cols:
                                 group_by = st.selectbox("Group By", [None] + categorical_cols)
                             else:
                                 group_by = None
@@ -703,11 +749,14 @@ def main():
                 if success:
                     try:
                         engine = make_engine(db_type, sqlite_path="demo_db.sqlite")
-                        st.session_state.engine = engine
-                        st.session_state.schema_text = get_schema_text(engine)
-                        st.session_state.schema_dict = get_schema_dict(engine)
-                        st.session_state.current_db_path = "demo_db.sqlite"
-                        st.sidebar.success("✅ Demo database setup complete!")
+                        if engine:
+                            st.session_state.engine = engine
+                            st.session_state.schema_text = get_schema_text(engine)
+                            st.session_state.schema_dict = get_schema_dict(engine)
+                            st.session_state.current_db_path = "demo_db.sqlite"
+                            st.sidebar.success("✅ Demo database setup complete!")
+                        else:
+                            st.sidebar.error("❌ Failed to create database engine")
                     except Exception as e:
                         st.sidebar.error(f"❌ Setup failed: {e}")
 
