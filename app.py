@@ -6,10 +6,8 @@ import sqlite3
 from sqlalchemy import create_engine, text, inspect
 import openai
 from datetime import datetime
-from typing import Tuple, Dict, Optional, List
+from typing import Tuple, Dict
 import plotly.express as px
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 
 # ----------------- Config & OpenAI client -----------------
 st.set_page_config(
@@ -76,20 +74,23 @@ def init_sqlite_demo(path: str = "demo_db.sqlite") -> bool:
         conn = sqlite3.connect(path)
         cursor = conn.cursor()
         
-        # Drop existing tables
+        # Drop existing tables to avoid conflicts
         tables = ["orders", "products", "customers", "employees", "departments", "projects", "clients", "assignments"]
         for table in tables:
-            cursor.execute(f"DROP TABLE IF EXISTS {table}")
+            try:
+                cursor.execute(f"DROP TABLE IF EXISTS {table}")
+            except:
+                pass
         
         # Create tables with proper schema
         demo_sql = """
-CREATE TABLE departments (
+CREATE TABLE IF NOT EXISTS departments (
     id INTEGER PRIMARY KEY,
     name TEXT NOT NULL,
     budget REAL
 );
 
-CREATE TABLE employees (
+CREATE TABLE IF NOT EXISTS employees (
     id INTEGER PRIMARY KEY,
     first_name TEXT NOT NULL,
     last_name TEXT NOT NULL,
@@ -102,7 +103,7 @@ CREATE TABLE employees (
     FOREIGN KEY (department_id) REFERENCES departments (id)
 );
 
-CREATE TABLE clients (
+CREATE TABLE IF NOT EXISTS clients (
     client_id INTEGER PRIMARY KEY,
     client_name TEXT NOT NULL,
     contact_person TEXT,
@@ -111,7 +112,7 @@ CREATE TABLE clients (
     address TEXT
 );
 
-CREATE TABLE projects (
+CREATE TABLE IF NOT EXISTS projects (
     project_id INTEGER PRIMARY KEY,
     project_name TEXT NOT NULL,
     client_id INTEGER,
@@ -122,7 +123,7 @@ CREATE TABLE projects (
     FOREIGN KEY (client_id) REFERENCES clients (client_id)
 );
 
-CREATE TABLE assignments (
+CREATE TABLE IF NOT EXISTS assignments (
     assignment_id INTEGER PRIMARY KEY,
     employee_id INTEGER NOT NULL,
     project_id INTEGER NOT NULL,
@@ -131,30 +132,30 @@ CREATE TABLE assignments (
     FOREIGN KEY (project_id) REFERENCES projects (project_id)
 );
 
--- Insert sample data
-INSERT INTO departments (id, name, budget) VALUES 
+-- Insert sample data only if tables are empty
+INSERT OR IGNORE INTO departments (id, name, budget) VALUES 
 (1, 'Engineering', 500000),
 (2, 'Sales', 300000),
 (3, 'Marketing', 200000),
 (4, 'Support', 150000);
 
-INSERT INTO employees (id, first_name, last_name, email, phone, position, department_id, hire_date, salary) VALUES 
+INSERT OR IGNORE INTO employees (id, first_name, last_name, email, phone, position, department_id, hire_date, salary) VALUES 
 (1, 'John', 'Smith', 'john@company.com', '555-0101', 'Senior Developer', 1, '2022-01-15', 95000),
 (2, 'Sarah', 'Johnson', 'sarah@company.com', '555-0102', 'Project Manager', 1, '2022-03-10', 85000),
 (3, 'Mike', 'Chen', 'mike@company.com', '555-0103', 'Sales Executive', 2, '2022-05-20', 75000),
 (4, 'Lisa', 'Rodriguez', 'lisa@company.com', '555-0104', 'Marketing Specialist', 3, '2022-07-05', 65000);
 
-INSERT INTO clients (client_id, client_name, contact_person, email, phone, address) VALUES 
+INSERT OR IGNORE INTO clients (client_id, client_name, contact_person, email, phone, address) VALUES 
 (1, 'TechSolutions Inc', 'David Wilson', 'david@techsolutions.com', '555-0201', '123 Tech Ave'),
 (2, 'Global Enterprises', 'Maria Garcia', 'maria@globalent.com', '555-0202', '456 Business Blvd'),
 (3, 'Northwest Industries', 'Robert Brown', 'robert@nwindustries.com', '555-0203', '789 Industry St');
 
-INSERT INTO projects (project_id, project_name, client_id, start_date, end_date, budget, status) VALUES 
+INSERT OR IGNORE INTO projects (project_id, project_name, client_id, start_date, end_date, budget, status) VALUES 
 (1, 'Website Redesign', 1, '2023-01-15', '2023-06-15', 50000, 'Completed'),
 (2, 'Mobile App Development', 2, '2023-03-01', '2023-09-01', 75000, 'In Progress'),
 (3, 'Marketing Campaign', 3, '2023-05-01', '2023-08-01', 25000, 'Planning');
 
-INSERT INTO assignments (assignment_id, employee_id, project_id, role) VALUES 
+INSERT OR IGNORE INTO assignments (assignment_id, employee_id, project_id, role) VALUES 
 (1, 1, 1, 'Lead Developer'),
 (2, 2, 1, 'Project Manager'),
 (3, 1, 2, 'Backend Developer'),
@@ -172,7 +173,7 @@ INSERT INTO assignments (assignment_id, employee_id, project_id, role) VALUES
 
 def make_engine(db_type: str, sqlite_path: str = None, url: str = None):
     try:
-        if db_type == "SQLite (local demo)" or db_type == "SQLite (custom)":
+        if db_type in ["SQLite (local demo)", "SQLite (custom)"]:
             if not sqlite_path:
                 sqlite_path = "demo_db.sqlite"
             return create_engine(f"sqlite:///{sqlite_path}", connect_args={"check_same_thread": False})
@@ -285,6 +286,8 @@ CRITICAL RULES:
 6. For Projects: always include project_name, client_id is optional but recommended
 7. For Assignments: always include employee_id, project_id, role
 8. For Clients: always include client_name
+9. Use INSERT OR IGNORE to avoid duplicate key errors
+10. Use CREATE TABLE IF NOT EXISTS to avoid table creation errors
 
 Understand user intent perfectly and generate accurate SQL."""
 
@@ -325,6 +328,8 @@ ESSENTIAL REQUIREMENTS:
 5. Ensure data integrity and relationships work properly
 6. Use proper SQLite data types (INTEGER, TEXT, REAL, DATE)
 7. Include at least 3-5 sample records per table
+8. Use CREATE TABLE IF NOT EXISTS to avoid errors
+9. Use INSERT OR IGNORE to avoid duplicate errors
 
 Return only the SQL code without any explanations."""
 
@@ -669,7 +674,7 @@ def main():
                                         st.session_state.exploration_sql_executed = norm_sql
                                         
                                         st.success(f"✅ Query executed successfully! Returned {len(df)} rows.")
-                                        st.dataframe(df, use_container_width=True)
+                                        st.dataframe(df, width='stretch')
                                         
                                         if "exploration_history" not in st.session_state:
                                             st.session_state.exploration_history = []
