@@ -4,7 +4,6 @@ from youtube_transcript_api import YouTubeTranscriptApi
 from youtube_transcript_api._errors import TranscriptsDisabled, NoTranscriptFound, VideoUnavailable
 import re
 import tiktoken
-import json
 
 # Set page configuration
 st.set_page_config(
@@ -40,15 +39,47 @@ def extract_video_id(url):
 def get_transcript(video_id, languages=None):
     """Fetch transcript for a YouTube video with support for multiple languages"""
     try:
-        if languages:
-            # Try to get transcript in specified languages
-            transcript_list = YouTubeTranscriptApi.get_transcript(video_id, languages=languages)
-        else:
-            # Try to get transcript in any available language
-            transcript_list = YouTubeTranscriptApi.get_transcript(video_id)
+        # Get available transcripts first to see what's available
+        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
         
-        transcript = " ".join([entry['text'] for entry in transcript_list])
-        return transcript, transcript_list[0]['language'] if transcript_list else "unknown"
+        # Try to find a transcript in the preferred languages
+        transcript = None
+        detected_language = None
+        
+        if languages:
+            for lang in languages:
+                try:
+                    if transcript_list.find_transcript([lang]):
+                        transcript_data = transcript_list.find_transcript([lang]).fetch()
+                        transcript = " ".join([entry['text'] for entry in transcript_data])
+                        detected_language = lang
+                        break
+                except:
+                    continue
+        
+        # If no preferred language found, try to get any available transcript
+        if not transcript:
+            try:
+                transcript_data = transcript_list.find_transcript([transcript_list._manually_created_transcripts[0].language_code]).fetch()
+                transcript = " ".join([entry['text'] for entry in transcript_data])
+                detected_language = transcript_list._manually_created_transcripts[0].language_code
+            except:
+                # Try generated transcripts as fallback
+                try:
+                    transcript_data = transcript_list.find_generated_transcript(['en']).fetch()
+                    transcript = " ".join([entry['text'] for entry in transcript_data])
+                    detected_language = 'en'
+                except:
+                    # Final fallback - get the first available transcript
+                    try:
+                        first_transcript = list(transcript_list._manually_created_transcripts.values())[0]
+                        transcript_data = first_transcript.fetch()
+                        transcript = " ".join([entry['text'] for entry in transcript_data])
+                        detected_language = first_transcript.language_code
+                    except:
+                        return None, "No suitable transcript found"
+        
+        return transcript, detected_language
     
     except TranscriptsDisabled:
         return None, "Transcripts are disabled for this video."
@@ -66,12 +97,12 @@ def get_available_transcripts(video_id):
         available_transcripts = []
         
         # Get manually created transcripts
-        for transcript in transcript_list:
+        for transcript in transcript_list._manually_created_transcripts.values():
             available_transcripts.append({
                 'language': transcript.language,
                 'language_code': transcript.language_code,
-                'is_generated': transcript.is_generated,
-                'is_translatable': transcript.is_translatable
+                'is_generated': False,
+                'is_translatable': hasattr(transcript, 'is_translatable') and transcript.is_translatable
             })
         
         # Get generated transcripts
@@ -79,8 +110,8 @@ def get_available_transcripts(video_id):
             available_transcripts.append({
                 'language': transcript.language,
                 'language_code': transcript.language_code,
-                'is_generated': transcript.is_generated,
-                'is_translatable': transcript.is_translatable
+                'is_generated': True,
+                'is_translatable': hasattr(transcript, 'is_translatable') and transcript.is_translatable
             })
             
         return available_transcripts, None
@@ -142,7 +173,7 @@ def summarize_transcript(transcript, api_key, language="en", model="gpt-3.5-turb
         "en": "Please provide a comprehensive summary of the following YouTube video transcript. Include main points, key insights, and conclusions. Structure your response clearly:",
         "ur": "براہ کرم درج ذیل یوٹیوب ویڈیو ٹرانسکرپٹ کا جامع خلاصہ پیش کریں۔ اہم نکات، کلیدی بصیرتیں اور نتائج شامل کریں۔ اپنا جواب واضح ساخت میں پیش کریں:",
         "es": "Proporcione un resumen completo de la siguiente transcripción de video de YouTube. Incluya puntos principales, ideas clave y conclusiones. Estructure su respuesta claramente:",
-        "fr": "Veuillez fournir un résumé complet de la transcription suivante de la vidéo YouTube. Incluez les points principaux, les idées clés et les conclusions. Structurez votre réponse clairement:",
+        "fr": "Veuillez fournir un résumé complet de la transcription suivante de la vidéo YouTube. Incluez les points principaux, les idées clés et les conclusions. Structurez votre respuesta claramente:",
         "de": "Bitte geben Sie eine umfassende Zusammenfassung des folgenden YouTube-Videotranskripts. Fügen Sie Hauptpunkte, wichtige Erkenntnisse und Schlussfolgerungen hinzu. Strukturieren Sie Ihre Antwort klar:",
         "hi": "कृपया निम्नलिखित YouTube वीडियो ट्रांसक्रिप्ट का व्यापक सारांश प्रदान करें। मुख्य बिंदु, प्रमुख अंतर्दृष्टि और निष्कर्ष शामिल करें। अपनी प्रतिक्रिया को स्पष्ट रूप से संरचित करें:",
         "ar": "يرجى تقديم ملخص شامل لنص فيديو YouTube التالي. قم بتضمين النقاط الرئيسية والرؤى الأساسية والاستنتاجات. هيكل إجابتك بوضوح:",
@@ -306,24 +337,30 @@ def main():
             available_transcripts, error = get_available_transcripts(video_id)
             
             if error:
-                st.warning(f"Could not fetch available transcripts: {error}")
+                st.warning(f"Note: Could not fetch available transcripts list: {error}")
                 languages_to_try = None
             else:
-                st.success(f"Found {len(available_transcripts)} available transcript(s)")
                 if available_transcripts:
+                    st.success(f"Found {len(available_transcripts)} available transcript(s)")
                     with st.expander("View Available Transcripts"):
                         for transcript in available_transcripts:
-                            st.write(f"- {transcript['language']} ({transcript['language_code']})")
+                            st.write(f"- {transcript['language']} ({transcript['language_code']}) {'(Generated)' if transcript['is_generated'] else '(Manual)'}")
+                else:
+                    st.warning("No transcripts found or couldn't list available transcripts")
                 
                 # Determine which languages to try
                 if selected_language != "Auto-detect":
                     languages_to_try = [language_options[selected_language]]
                 else:
-                    # Try English first, then other languages
+                    # Try common languages in order of preference
                     languages_to_try = ['en', 'ur', 'es', 'fr', 'de', 'hi', 'ar', 'zh', 'ja', 'ru']
         
         with st.spinner("Fetching transcript..."):
-            transcript, transcript_language = get_transcript(video_id, languages=languages_to_try)
+            # If we couldn't get available transcripts, try with None (let the API handle it)
+            if error:
+                transcript, transcript_language = get_transcript(video_id, languages=None)
+            else:
+                transcript, transcript_language = get_transcript(video_id, languages=languages_to_try)
             
         if not transcript:
             st.error(f"Could not retrieve transcript for this video. {transcript_language}")
