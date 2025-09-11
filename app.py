@@ -1,6 +1,7 @@
 import streamlit as st
 import openai
 from youtube_transcript_api import YouTubeTranscriptApi
+from youtube_transcript_api._errors import TranscriptsDisabled, NoTranscriptFound
 import re
 import tiktoken
 
@@ -19,6 +20,8 @@ if 'video_id' not in st.session_state:
     st.session_state.video_id = None
 if 'video_title' not in st.session_state:
     st.session_state.video_title = None
+if 'api_key_configured' not in st.session_state:
+    st.session_state.api_key_configured = False
 
 def extract_video_id(url):
     """Extract YouTube video ID from URL"""
@@ -39,29 +42,63 @@ def get_transcript(video_id):
         transcript_list = YouTubeTranscriptApi.get_transcript(video_id)
         transcript = " ".join([entry['text'] for entry in transcript_list])
         return transcript
+    except TranscriptsDisabled:
+        st.error("Transcripts are disabled for this video.")
+        return None
+    except NoTranscriptFound:
+        st.error("No transcript found for this video.")
+        return None
     except Exception as e:
         st.error(f"Error fetching transcript: {str(e)}")
         return None
 
 def count_tokens(text):
     """Count tokens in text using tiktoken for GPT-3.5"""
-    encoding = tiktoken.encoding_for_model("gpt-3.5-turbo")
-    return len(encoding.encode(text))
+    try:
+        encoding = tiktoken.encoding_for_model("gpt-3.5-turbo")
+        return len(encoding.encode(text))
+    except:
+        # Fallback: approximate token count
+        return len(text.split())
 
 def split_text(text, max_tokens=3000):
     """Split text into chunks that don't exceed the token limit"""
-    encoding = tiktoken.encoding_for_model("gpt-3.5-turbo")
-    tokens = encoding.encode(text)
-    
-    chunks = []
-    for i in range(0, len(tokens), max_tokens):
-        chunk_tokens = tokens[i:i+max_tokens]
-        chunks.append(encoding.decode(chunk_tokens))
-    
-    return chunks
+    try:
+        encoding = tiktoken.encoding_for_model("gpt-3.5-turbo")
+        tokens = encoding.encode(text)
+        
+        chunks = []
+        for i in range(0, len(tokens), max_tokens):
+            chunk_tokens = tokens[i:i+max_tokens]
+            chunks.append(encoding.decode(chunk_tokens))
+        
+        return chunks
+    except:
+        # Fallback: split by words
+        words = text.split()
+        chunks = []
+        current_chunk = []
+        current_count = 0
+        
+        for word in words:
+            if current_count + len(word.split()) > max_tokens:
+                chunks.append(" ".join(current_chunk))
+                current_chunk = [word]
+                current_count = len(word.split())
+            else:
+                current_chunk.append(word)
+                current_count += len(word.split())
+        
+        if current_chunk:
+            chunks.append(" ".join(current_chunk))
+        
+        return chunks
 
 def summarize_transcript(transcript, api_key, model="gpt-3.5-turbo"):
     """Summarize transcript using OpenAI API"""
+    # Set the API key
+    openai.api_key = api_key
+    
     # Check token count and split if necessary
     token_count = count_tokens(transcript)
     
@@ -77,7 +114,7 @@ def summarize_transcript(transcript, api_key, model="gpt-3.5-turbo"):
                     response = openai.ChatCompletion.create(
                         model=model,
                         messages=[
-                            {"role": "system", "content": "You are a helpful assistant that summarizes YouTube video transcripts."},
+                            {"role": "system", "content": "You are a helpful assistant that summarizes YouTube video transcripts in a clear, structured manner."},
                             {"role": "user", "content": prompt}
                         ],
                         max_tokens=500,
@@ -90,13 +127,13 @@ def summarize_transcript(transcript, api_key, model="gpt-3.5-turbo"):
         
         # Combine and summarize the summaries
         combined_summaries = "\n\n".join(summaries)
-        final_prompt = f"Please combine these section summaries into a coherent overall summary of the video:\n\n{combined_summaries}"
+        final_prompt = f"Please combine these section summaries into a coherent overall summary of the video. Provide a comprehensive overview with main points and key insights:\n\n{combined_summaries}"
         
         try:
             response = openai.ChatCompletion.create(
                 model=model,
                 messages=[
-                    {"role": "system", "content": "You are a helpful assistant that summarizes YouTube video transcripts."},
+                    {"role": "system", "content": "You are a helpful assistant that creates comprehensive video summaries."},
                     {"role": "user", "content": final_prompt}
                 ],
                 max_tokens=600,
@@ -107,13 +144,13 @@ def summarize_transcript(transcript, api_key, model="gpt-3.5-turbo"):
             st.error(f"Error during final API call: {str(e)}")
             return None
     else:
-        prompt = f"Please provide a comprehensive summary of the following YouTube video transcript. Include main points, key insights, and conclusions:\n\n{transcript}"
+        prompt = f"Please provide a comprehensive summary of the following YouTube video transcript. Include main points, key insights, and conclusions. Structure your response clearly:\n\n{transcript}"
         
         try:
             response = openai.ChatCompletion.create(
                 model=model,
                 messages=[
-                    {"role": "system", "content": "You are a helpful assistant that summarizes YouTube video transcripts."},
+                    {"role": "system", "content": "You are a helpful assistant that summarizes YouTube video transcripts in a clear, structured manner."},
                     {"role": "user", "content": prompt}
                 ],
                 max_tokens=800,
@@ -128,40 +165,56 @@ def main():
     st.title("📺 YouTube Video Summarizer")
     st.markdown("Generate AI-powered summaries of YouTube videos using their URLs")
     
-    # Sidebar for API key input
+    # Check for API key in secrets
+    if 'OPENAI_API_KEY' in st.secrets:
+        st.session_state.api_key_configured = True
+        api_key = st.secrets['OPENAI_API_KEY']
+    else:
+        st.session_state.api_key_configured = False
+        api_key = None
+    
+    # Sidebar for configuration
     with st.sidebar:
         st.header("Configuration")
-        api_key = st.text_input("OpenAI API Key", type="password", 
-                               help="Enter your OpenAI API key. This is required to generate summaries.")
+        
+        if not st.session_state.api_key_configured:
+            api_key = st.text_input("OpenAI API Key", type="password", 
+                                   help="Enter your OpenAI API key. This is required to generate summaries.")
+            if api_key:
+                st.session_state.api_key_configured = True
+        else:
+            st.success("API key loaded from secrets")
+            if st.button("Use different API key"):
+                st.session_state.api_key_configured = False
+                st.experimental_rerun()
+        
         st.markdown("---")
         st.markdown("### How to use")
         st.markdown("""
-        1. Enter your OpenAI API key
+        1. Enter your OpenAI API key (if not in secrets)
         2. Paste a YouTube URL
         3. Click 'Generate Summary'
         4. View and copy your summary
         """)
         st.markdown("---")
         st.markdown("### Note")
-        st.markdown("This tool extracts the transcript from YouTube videos and uses AI to generate a summary. Not all videos have available transcripts.")
+        st.markdown("""
+        - This tool extracts the transcript from YouTube videos
+        - Uses AI to generate a summary
+        - Not all videos have available transcripts
+        - Longer videos may take more time to process
+        """)
     
     # Main content area
     url = st.text_input("YouTube Video URL", placeholder="Paste YouTube URL here...")
     
-    col1, col2 = st.columns([1, 3])
-    with col1:
-        generate_btn = st.button("Generate Summary", disabled=not api_key)
-    with col2:
-        if st.session_state.summary:
-            copy_btn = st.button("Copy Summary")
+    generate_btn = st.button("Generate Summary", disabled=not st.session_state.api_key_configured)
     
     if generate_btn and url:
-        if not api_key:
+        if not st.session_state.api_key_configured:
             st.error("Please enter your OpenAI API key in the sidebar.")
             return
             
-        openai.api_key = api_key
-        
         with st.spinner("Extracting video ID..."):
             video_id = extract_video_id(url)
             
@@ -170,7 +223,6 @@ def main():
             return
             
         st.session_state.video_id = video_id
-        embed_url = f"https://www.youtube.com/embed/{video_id}"
         
         st.markdown("---")
         st.markdown(f"### Video Preview")
@@ -186,7 +238,7 @@ def main():
         with st.expander("View Raw Transcript"):
             st.text(transcript[:1000] + "..." if len(transcript) > 1000 else transcript)
             
-        with st.spinner("Generating summary..."):
+        with st.spinner("Generating summary (this may take a while for longer videos)..."):
             summary = summarize_transcript(transcript, api_key)
             
         if summary:
@@ -197,10 +249,12 @@ def main():
             
     elif generate_btn and not url:
         st.error("Please enter a YouTube URL.")
-        
-    if copy_btn and st.session_state.summary:
-        st.code(st.session_state.summary)
-        st.success("Summary copied to clipboard!")
+    
+    # Display copy button only if there's a summary
+    if st.session_state.summary:
+        if st.button("Copy Summary"):
+            st.code(st.session_state.summary)
+            st.success("Summary copied to clipboard!")
 
 if __name__ == "__main__":
     main()
