@@ -1,9 +1,10 @@
 import streamlit as st
 import openai
 from youtube_transcript_api import YouTubeTranscriptApi
-from youtube_transcript_api._errors import TranscriptsDisabled, NoTranscriptFound
+from youtube_transcript_api._errors import TranscriptsDisabled, NoTranscriptFound, VideoUnavailable
 import re
 import tiktoken
+import json
 
 # Set page configuration
 st.set_page_config(
@@ -36,21 +37,55 @@ def extract_video_id(url):
             return match.group(1)
     return None
 
-def get_transcript(video_id):
-    """Fetch transcript for a YouTube video"""
+def get_transcript(video_id, languages=None):
+    """Fetch transcript for a YouTube video with support for multiple languages"""
     try:
-        transcript_list = YouTubeTranscriptApi.get_transcript(video_id)
+        if languages:
+            # Try to get transcript in specified languages
+            transcript_list = YouTubeTranscriptApi.get_transcript(video_id, languages=languages)
+        else:
+            # Try to get transcript in any available language
+            transcript_list = YouTubeTranscriptApi.get_transcript(video_id)
+        
         transcript = " ".join([entry['text'] for entry in transcript_list])
-        return transcript
+        return transcript, transcript_list[0]['language'] if transcript_list else "unknown"
+    
     except TranscriptsDisabled:
-        st.error("Transcripts are disabled for this video.")
-        return None
+        return None, "Transcripts are disabled for this video."
     except NoTranscriptFound:
-        st.error("No transcript found for this video.")
-        return None
+        return None, "No transcript found for this video."
+    except VideoUnavailable:
+        return None, "Video is unavailable."
     except Exception as e:
-        st.error(f"Error fetching transcript: {str(e)}")
-        return None
+        return None, f"Error fetching transcript: {str(e)}"
+
+def get_available_transcripts(video_id):
+    """Get list of available transcripts for a video"""
+    try:
+        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+        available_transcripts = []
+        
+        # Get manually created transcripts
+        for transcript in transcript_list:
+            available_transcripts.append({
+                'language': transcript.language,
+                'language_code': transcript.language_code,
+                'is_generated': transcript.is_generated,
+                'is_translatable': transcript.is_translatable
+            })
+        
+        # Get generated transcripts
+        for transcript in transcript_list._generated_transcripts.values():
+            available_transcripts.append({
+                'language': transcript.language,
+                'language_code': transcript.language_code,
+                'is_generated': transcript.is_generated,
+                'is_translatable': transcript.is_translatable
+            })
+            
+        return available_transcripts, None
+    except Exception as e:
+        return None, f"Error listing transcripts: {str(e)}"
 
 def count_tokens(text):
     """Count tokens in text using tiktoken for GPT-3.5"""
@@ -94,13 +129,30 @@ def split_text(text, max_tokens=3000):
         
         return chunks
 
-def summarize_transcript(transcript, api_key, model="gpt-3.5-turbo"):
-    """Summarize transcript using OpenAI API"""
+def summarize_transcript(transcript, api_key, language="en", model="gpt-3.5-turbo"):
+    """Summarize transcript using OpenAI API with language support"""
     # Set the API key
     openai.api_key = api_key
     
     # Check token count and split if necessary
     token_count = count_tokens(transcript)
+    
+    # Language-specific prompts
+    language_prompts = {
+        "en": "Please provide a comprehensive summary of the following YouTube video transcript. Include main points, key insights, and conclusions. Structure your response clearly:",
+        "ur": "براہ کرم درج ذیل یوٹیوب ویڈیو ٹرانسکرپٹ کا جامع خلاصہ پیش کریں۔ اہم نکات، کلیدی بصیرتیں اور نتائج شامل کریں۔ اپنا جواب واضح ساخت میں پیش کریں:",
+        "es": "Proporcione un resumen completo de la siguiente transcripción de video de YouTube. Incluya puntos principales, ideas clave y conclusiones. Estructure su respuesta claramente:",
+        "fr": "Veuillez fournir un résumé complet de la transcription suivante de la vidéo YouTube. Incluez les points principaux, les idées clés et les conclusions. Structurez votre réponse clairement:",
+        "de": "Bitte geben Sie eine umfassende Zusammenfassung des folgenden YouTube-Videotranskripts. Fügen Sie Hauptpunkte, wichtige Erkenntnisse und Schlussfolgerungen hinzu. Strukturieren Sie Ihre Antwort klar:",
+        "hi": "कृपया निम्नलिखित YouTube वीडियो ट्रांसक्रिप्ट का व्यापक सारांश प्रदान करें। मुख्य बिंदु, प्रमुख अंतर्दृष्टि और निष्कर्ष शामिल करें। अपनी प्रतिक्रिया को स्पष्ट रूप से संरचित करें:",
+        "ar": "يرجى تقديم ملخص شامل لنص فيديو YouTube التالي. قم بتضمين النقاط الرئيسية والرؤى الأساسية والاستنتاجات. هيكل إجابتك بوضوح:",
+        "zh": "请提供以下YouTube视频转录的全面摘要。包括要点、关键见解和结论。清晰地构建您的回答:",
+        "ja": "以下のYouTubeビデオの文字起こしの包括的な要約を提供してください。主なポイント、重要な洞察、結論を含めてください。回答を明確に構成してください:",
+        "ru": "Предоставьте всеобъемлющее резюме следующей расшифровки видео YouTube. Включите основные моменты, ключевые идеи и выводы. Четко структурируйте свой ответ:"
+    }
+    
+    base_prompt = language_prompts.get(language, language_prompts["en"])
+    full_prompt = f"{base_prompt}\n\n{transcript}"
     
     if token_count > 3000:
         chunks = split_text(transcript)
@@ -108,14 +160,14 @@ def summarize_transcript(transcript, api_key, model="gpt-3.5-turbo"):
         
         for i, chunk in enumerate(chunks):
             with st.spinner(f"Summarizing part {i+1}/{len(chunks)}..."):
-                prompt = f"Please provide a detailed summary of the following video transcript section:\n\n{chunk}"
+                chunk_prompt = f"{base_prompt}\n\n{chunk}"
                 
                 try:
                     response = openai.ChatCompletion.create(
                         model=model,
                         messages=[
                             {"role": "system", "content": "You are a helpful assistant that summarizes YouTube video transcripts in a clear, structured manner."},
-                            {"role": "user", "content": prompt}
+                            {"role": "user", "content": chunk_prompt}
                         ],
                         max_tokens=500,
                         temperature=0.3
@@ -144,14 +196,12 @@ def summarize_transcript(transcript, api_key, model="gpt-3.5-turbo"):
             st.error(f"Error during final API call: {str(e)}")
             return None
     else:
-        prompt = f"Please provide a comprehensive summary of the following YouTube video transcript. Include main points, key insights, and conclusions. Structure your response clearly:\n\n{transcript}"
-        
         try:
             response = openai.ChatCompletion.create(
                 model=model,
                 messages=[
                     {"role": "system", "content": "You are a helpful assistant that summarizes YouTube video transcripts in a clear, structured manner."},
-                    {"role": "user", "content": prompt}
+                    {"role": "user", "content": full_prompt}
                 ],
                 max_tokens=800,
                 temperature=0.3
@@ -188,19 +238,42 @@ def main():
                 st.session_state.api_key_configured = False
                 st.experimental_rerun()
         
+        # Language selection
+        st.markdown("---")
+        st.markdown("### Language Preferences")
+        language_options = {
+            "Auto-detect": "auto",
+            "English": "en",
+            "Urdu": "ur",
+            "Spanish": "es",
+            "French": "fr",
+            "German": "de",
+            "Hindi": "hi",
+            "Arabic": "ar",
+            "Chinese": "zh",
+            "Japanese": "ja",
+            "Russian": "ru"
+        }
+        selected_language = st.selectbox(
+            "Preferred language for transcript:",
+            options=list(language_options.keys()),
+            index=0
+        )
+        
         st.markdown("---")
         st.markdown("### How to use")
         st.markdown("""
         1. Enter your OpenAI API key (if not in secrets)
         2. Paste a YouTube URL
-        3. Click 'Generate Summary'
-        4. View and copy your summary
+        3. Select language preference (optional)
+        4. Click 'Generate Summary'
+        5. View and copy your summary
         """)
         st.markdown("---")
         st.markdown("### Note")
         st.markdown("""
         - This tool extracts the transcript from YouTube videos
-        - Uses AI to generate a summary
+        - Supports multiple languages including English, Urdu, Spanish, etc.
         - Not all videos have available transcripts
         - Longer videos may take more time to process
         """)
@@ -226,20 +299,43 @@ def main():
         
         st.markdown("---")
         st.markdown(f"### Video Preview")
-        st.video(url)
+        st.video(f"https://www.youtube.com/watch?v={video_id}")
+        
+        # Get available transcripts
+        with st.spinner("Checking available transcripts..."):
+            available_transcripts, error = get_available_transcripts(video_id)
+            
+            if error:
+                st.warning(f"Could not fetch available transcripts: {error}")
+                languages_to_try = None
+            else:
+                st.success(f"Found {len(available_transcripts)} available transcript(s)")
+                if available_transcripts:
+                    with st.expander("View Available Transcripts"):
+                        for transcript in available_transcripts:
+                            st.write(f"- {transcript['language']} ({transcript['language_code']})")
+                
+                # Determine which languages to try
+                if selected_language != "Auto-detect":
+                    languages_to_try = [language_options[selected_language]]
+                else:
+                    # Try English first, then other languages
+                    languages_to_try = ['en', 'ur', 'es', 'fr', 'de', 'hi', 'ar', 'zh', 'ja', 'ru']
         
         with st.spinner("Fetching transcript..."):
-            transcript = get_transcript(video_id)
+            transcript, transcript_language = get_transcript(video_id, languages=languages_to_try)
             
         if not transcript:
-            st.error("Could not retrieve transcript for this video. It may not have captions available.")
+            st.error(f"Could not retrieve transcript for this video. {transcript_language}")
             return
+            
+        st.success(f"Successfully retrieved transcript in {transcript_language if isinstance(transcript_language, str) else 'detected language'}")
             
         with st.expander("View Raw Transcript"):
             st.text(transcript[:1000] + "..." if len(transcript) > 1000 else transcript)
             
         with st.spinner("Generating summary (this may take a while for longer videos)..."):
-            summary = summarize_transcript(transcript, api_key)
+            summary = summarize_transcript(transcript, api_key, language=language_options.get(selected_language, "en"))
             
         if summary:
             st.session_state.summary = summary
