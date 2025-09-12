@@ -12,7 +12,8 @@ import subprocess
 try:
     import openai
 except ImportError:
-    st.warning("OpenAI package not found. Installing...")
+    import subprocess
+    import sys
     subprocess.check_call([sys.executable, "-m", "pip", "install", "openai"])
     import openai
 
@@ -37,19 +38,41 @@ if 'openai_api_key' not in st.session_state:
     st.session_state.openai_api_key = None
 
 # Set up OpenAI API
-try:
-    # Check if OpenAI API key is available in secrets
-    if hasattr(st, 'secrets') and st.secrets is not None:
-        if 'openai' in st.secrets and 'api_key' in st.secrets['openai']:
-            st.session_state.openai_api_key = st.secrets['openai']['api_key']
-            openai.api_key = st.session_state.openai_api_key
-            st.session_state.openai_available = True
-        else:
-            st.session_state.openai_available = False
-    else:
-        st.session_state.openai_available = False
-except Exception as e:
-    st.session_state.openai_available = False
+def setup_openai():
+    try:
+        # Check if OpenAI API key is available in secrets
+        if hasattr(st, 'secrets'):
+            # Method 1: Check for openai.api_key directly
+            if hasattr(st.secrets, 'openai') and hasattr(st.secrets.openai, 'api_key'):
+                st.session_state.openai_api_key = st.secrets.openai.api_key
+                openai.api_key = st.session_state.openai_api_key
+                st.session_state.openai_available = True
+                return True
+            
+            # Method 2: Check for dictionary-style access
+            try:
+                if 'openai' in st.secrets and 'api_key' in st.secrets['openai']:
+                    st.session_state.openai_api_key = st.secrets['openai']['api_key']
+                    openai.api_key = st.session_state.openai_api_key
+                    st.session_state.openai_available = True
+                    return True
+            except:
+                pass
+                
+            # Method 3: Check for direct API key in secrets
+            if 'OPENAI_API_KEY' in st.secrets:
+                st.session_state.openai_api_key = st.secrets['OPENAI_API_KEY']
+                openai.api_key = st.session_state.openai_api_key
+                st.session_state.openai_available = True
+                return True
+                
+        return False
+    except Exception as e:
+        st.error(f"Error setting up OpenAI: {str(e)}")
+        return False
+
+# Run setup
+setup_openai()
 
 def extract_video_id(url):
     """Extract YouTube video ID from URL"""
@@ -174,7 +197,7 @@ def summarize_with_openai(text, video_title):
     """Summarize text using OpenAI API"""
     try:
         if not st.session_state.openai_api_key:
-            return "OpenAI API key not found. Please check your Streamlit secrets configuration.", False
+            return "OpenAI API key not found.", False
         
         # Truncate text if it's too long for the API
         max_length = 12000
@@ -206,7 +229,7 @@ def summarize_with_openai(text, video_title):
         return summary, True
         
     except openai.error.AuthenticationError:
-        return "Authentication error. Please check your OpenAI API key in the Streamlit secrets.", False
+        return "Authentication error. Please check your OpenAI API key.", False
     except openai.error.RateLimitError:
         return "Rate limit exceeded. Please try again later.", False
     except openai.error.OpenAIError as e:
@@ -261,16 +284,36 @@ def main():
     
     # Check for API key
     if not st.session_state.openai_available:
-        st.warning("⚠️ OpenAI API key not found. Please make sure you've added it to your Streamlit secrets. Using fallback summarization method.")
+        st.warning("⚠️ OpenAI API key not found in secrets. You can enter it manually below.")
     
     # Manual API key input option
-    with st.expander("Manual API Key Input (Alternative to Secrets)"):
-        manual_api_key = st.text_input("Enter your OpenAI API key manually:", type="password")
+    with st.expander("OpenAI API Key Configuration"):
+        st.info("Add your API key either via Streamlit secrets or manually below.")
+        
+        manual_api_key = st.text_input("Enter your OpenAI API key manually:", type="password", value=st.session_state.openai_api_key or "")
         if manual_api_key:
             st.session_state.openai_api_key = manual_api_key
             openai.api_key = manual_api_key
             st.session_state.openai_available = True
             st.success("API key set successfully!")
+        
+        if st.button("Check Secrets Configuration"):
+            if hasattr(st, 'secrets'):
+                try:
+                    secrets_info = "Available secrets: "
+                    if hasattr(st.secrets, 'openai') and hasattr(st.secrets.openai, 'api_key'):
+                        secrets_info += "openai.api_key found! ✅"
+                    elif 'openai' in st.secrets and 'api_key' in st.secrets['openai']:
+                        secrets_info += "openai['api_key'] found! ✅"
+                    elif 'OPENAI_API_KEY' in st.secrets:
+                        secrets_info += "OPENAI_API_KEY found! ✅"
+                    else:
+                        secrets_info += "No OpenAI API key found in secrets. ❌"
+                    st.info(secrets_info)
+                except Exception as e:
+                    st.error(f"Error checking secrets: {str(e)}")
+            else:
+                st.error("Secrets not available in this environment.")
     
     # Main content area
     url = st.text_input("YouTube Video URL", placeholder="Paste YouTube URL here...")
@@ -323,25 +366,27 @@ def main():
             try:
                 video_title = get_video_title(video_id)
                 
-                if st.session_state.openai_available:
+                if st.session_state.openai_available and st.session_state.openai_api_key:
                     summary, success = summarize_with_openai(transcript, video_title)
                     if success:
                         st.session_state.summary = summary
+                        st.success("Summary generated using OpenAI! ✅")
                     else:
                         st.warning(f"OpenAI summarization failed: {summary}. Using fallback method.")
                         summary = summarize_text(transcript)
                         st.session_state.summary = summary
+                        st.info("Summary generated using fallback method. ⚠️")
                 else:
                     summary = summarize_text(transcript)
                     st.session_state.summary = summary
+                    st.info("Summary generated using fallback method. ⚠️")
                 
                 st.markdown("---")
                 st.markdown("### 📝 Intelligent Summary")
-                st.success("Summary generated successfully!")
                 st.write(summary)
                 
                 # Display word count for summary
-                if transcript:
+                if transcript and count_words(transcript) > 0:
                     reduction = int((1 - count_words(summary)/count_words(transcript)) * 100)
                     st.info(f"Summary length: {count_words(summary)} words (reduced by {reduction}%)")
                     
