@@ -4,8 +4,17 @@ import requests
 from bs4 import BeautifulSoup
 import json
 import time
-import openai
 import xml.etree.ElementTree as ET
+import sys
+import subprocess
+
+# Try to import openai, install if not available
+try:
+    import openai
+except ImportError:
+    st.warning("OpenAI package not found. Installing...")
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "openai"])
+    import openai
 
 # Set page configuration
 st.set_page_config(
@@ -22,14 +31,22 @@ if 'video_id' not in st.session_state:
     st.session_state.video_id = None
 if 'transcript_status' not in st.session_state:
     st.session_state.transcript_status = None
+if 'openai_available' not in st.session_state:
+    st.session_state.openai_available = True
 
 # Set up OpenAI API
 if 'openai_api_key' not in st.session_state:
-    if 'openai' in st.secrets and 'api_key' in st.secrets.openai:
-        st.session_state.openai_api_key = st.secrets.openai.api_key
-        openai.api_key = st.secrets.openai.api_key
-    else:
+    try:
+        if 'openai' in st.secrets and 'api_key' in st.secrets.openai:
+            st.session_state.openai_api_key = st.secrets.openai.api_key
+            openai.api_key = st.secrets.openai.api_key
+            st.session_state.openai_available = True
+        else:
+            st.session_state.openai_api_key = None
+            st.session_state.openai_available = False
+    except Exception:
         st.session_state.openai_api_key = None
+        st.session_state.openai_available = False
 
 def extract_video_id(url):
     """Extract YouTube video ID from URL"""
@@ -48,12 +65,13 @@ def get_video_title(video_id):
     """Get video title from YouTube"""
     try:
         url = f"https://www.youtube.com/watch?v={video_id}"
-        response = requests.get(url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'})
+        response = requests.get(url, headers={
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }, timeout=10)
         soup = BeautifulSoup(response.text, 'html.parser')
         title = soup.find('meta', property='og:title')
         return title['content'] if title else f"Video {video_id}"
     except Exception as e:
-        st.error(f"Error fetching video title: {str(e)}")
         return f"Video {video_id}"
 
 def get_transcript(video_id):
@@ -66,36 +84,35 @@ def get_transcript(video_id):
             'Accept-Language': 'en-US,en;q=0.9'
         }
         
-        response = requests.get(url, headers=headers, timeout=10)
+        response = requests.get(url, headers=headers, timeout=15)
         soup = BeautifulSoup(response.text, 'html.parser')
         
         # Look for script tags containing caption data
         scripts = soup.find_all('script')
-        caption_data = None
         
         for script in scripts:
-            if 'captionTracks' in script.text:
-                try:
-                    # Extract JSON data from script
-                    script_text = script.string
-                    if not script_text:
-                        continue
+            script_text = script.string
+            if not script_text or 'captionTracks' not in script_text:
+                continue
+                
+            try:
+                # Find the JSON data in the script
+                start = script_text.find('{"responseContext"')
+                if start == -1:
+                    continue
                     
-                    # Find the start of the JSON data
-                    start = script_text.find('{"responseContext"')
-                    if start == -1:
-                        continue
-                    
-                    # Find a reasonable end point
-                    end = script_text.find('};', start)
-                    if end == -1:
-                        end = script_text.find('</script>', start)
-                    else:
-                        end += 1  # Include the semicolon
-                    
-                    if end == -1:
-                        continue
-                    
+                # Find the end of the JSON object
+                brace_count = 1
+                end = start + 1
+                
+                while end < len(script_text) and brace_count > 0:
+                    if script_text[end] == '{':
+                        brace_count += 1
+                    elif script_text[end] == '}':
+                        brace_count -= 1
+                    end += 1
+                
+                if brace_count == 0:
                     json_str = script_text[start:end]
                     data = json.loads(json_str)
                     
@@ -107,24 +124,33 @@ def get_transcript(video_id):
                             base_url = track.get('baseUrl')
                             if base_url:
                                 # Fetch the XML transcript
-                                transcript_response = requests.get(base_url, headers=headers, timeout=10)
+                                transcript_response = requests.get(base_url, headers=headers, timeout=15)
                                 if transcript_response.status_code == 200:
-                                    root = ET.fromstring(transcript_response.text)
+                                    # Parse XML transcript
+                                    root = ET.fromstring(transcript_response.content)
                                     transcript_texts = []
                                     for child in root:
                                         if child.text:
                                             transcript_texts.append(child.text)
                                     transcript = ' '.join(transcript_texts)
-                                    return transcript, "Success (Official Transcript)"
-                except (json.JSONDecodeError, ET.ParseError) as e:
-                    continue
+                                    if transcript and len(transcript) > 100:
+                                        return transcript, "Success (Official Transcript)"
+            except (json.JSONDecodeError, ET.ParseError, TypeError):
+                continue
         
-        # Method 2: Try alternative approach with video description
+        # Method 2: Try to get transcript from alternative source
         try:
-            # Look for a description that might contain transcript-like content
-            description_meta = soup.find('meta', {'name': 'description'})
-            if description_meta and len(description_meta.get('content', '')) > 200:
-                return description_meta['content'], "Success (Description Content)"
+            # Try to get transcript from a different endpoint
+            transcript_url = f"https://youtubetranscript.com/?server_vid={video_id}"
+            transcript_response = requests.get(transcript_url, headers=headers, timeout=15)
+            
+            if transcript_response.status_code == 200:
+                transcript_soup = BeautifulSoup(transcript_response.text, 'html.parser')
+                transcript_div = transcript_soup.find('div', {'id': 'transcript'})
+                if transcript_div:
+                    transcript = transcript_div.get_text(separator=' ', strip=True)
+                    if transcript and len(transcript) > 100:
+                        return transcript, "Success (Alternative Source)"
         except:
             pass
         
@@ -138,68 +164,11 @@ def get_transcript(video_id):
 
 def generate_realistic_transcript(video_title):
     """Generate a realistic transcript based on video title"""
-    topics = {
-        'tutorial': [
-            "Welcome to this comprehensive tutorial where I'll guide you through each step of the process.",
-            "First, let's start with the basic concepts and fundamentals that you need to understand.",
-            "Make sure you have all the necessary tools and materials ready before we begin.",
-            "The key to success here is patience and following the instructions carefully.",
-            "Many beginners make the mistake of rushing through the important foundational steps.",
-            "I'll show you some pro tips and tricks that I've learned from years of experience.",
-            "Remember to practice regularly and don't get discouraged if you don't get it right immediately.",
-            "If you have any questions, feel free to leave them in the comments section below."
-        ],
-        'tech': [
-            "The technology landscape is evolving at an unprecedented pace these days.",
-            "This innovation represents a significant breakthrough in the field.",
-            "Let's analyze the technical specifications and compare them with competing solutions.",
-            "The implementation requires careful consideration of security and scalability factors.",
-            "Early adopters have reported impressive results and performance improvements.",
-            "However, there are still some challenges that need to be addressed in future updates.",
-            "The development team is working on exciting new features for the next release.",
-            "This technology has the potential to revolutionize how we approach this problem."
-        ],
-        'education': [
-            "Understanding this concept is fundamental to mastering the subject matter.",
-            "Research has shown that active learning techniques significantly improve retention.",
-            "Let's break down complex ideas into more digestible components.",
-            "Historical context is important for understanding current developments in the field.",
-            "Critical thinking skills are essential for analyzing information effectively.",
-            "The curriculum has been designed based on proven educational methodologies.",
-            "Practical applications help reinforce theoretical knowledge.",
-            "Continuous learning is key to staying relevant in today's rapidly changing world."
-        ],
-        'default': [
-            "Thank you for joining me in this discussion about important developments.",
-            "I want to share some valuable insights that I've gathered through extensive research.",
-            "The main points we'll be covering include key concepts and practical applications.",
-            "Many viewers have asked questions about this topic, so I'll address the most common ones.",
-            "Research and data support the conclusions that we're drawing here today.",
-            "It's important to consider different perspectives when analyzing this subject.",
-            "The future looks promising based on current trends and developments.",
-            "I encourage you to continue learning and exploring this fascinating topic."
-        ]
-    }
-    
-    # Determine topic based on title
-    title_lower = video_title.lower()
-    if any(word in title_lower for word in ['tutorial', 'how to', 'guide', 'step by step']):
-        topic = 'tutorial'
-    elif any(word in title_lower for word in ['technology', 'tech', 'ai', 'software', 'programming']):
-        topic = 'tech'
-    elif any(word in title_lower for word in ['education', 'learn', 'teaching', 'course', 'study']):
-        topic = 'education'
-    else:
-        topic = 'default'
-    
-    # Generate transcript
-    transcript = f"In this video titled '{video_title}', we explore important aspects of this topic. "
-    transcript += " ".join(topics[topic])
-    transcript += f" This video provides comprehensive coverage of {video_title} and offers practical insights that viewers can apply. Remember to like and subscribe for more content on this subject!"
-    
-    return transcript
+    # This is a fallback for when we can't get a real transcript
+    # In a real application, you would want to implement better fallback methods
+    return f"This is a simulated transcript for the video titled '{video_title}'. In a real implementation, this would be replaced with the actual transcript extracted from the YouTube video. For a fully functional version, please ensure you have proper access to YouTube's API or use a dedicated service for transcript extraction."
 
-def summarize_with_openai(text):
+def summarize_with_openai(text, video_title):
     """Summarize text using OpenAI API"""
     try:
         if not st.session_state.openai_api_key:
@@ -211,7 +180,7 @@ def summarize_with_openai(text):
             text = text[:max_length] + "... [content truncated for length]"
         
         prompt = f"""
-        Please provide a comprehensive and accurate summary of the following video transcript. 
+        Please provide a comprehensive and accurate summary of the following video transcript from a video titled "{video_title}". 
         Focus on the main points, key insights, and important information. 
         Make the summary concise but informative, capturing the essence of the content.
         
@@ -339,10 +308,12 @@ def main():
         with st.expander("View Raw Transcript"):
             st.text(transcript[:1000] + "..." if len(transcript) > 1000 else transcript)
             
-        with st.spinner("Generating intelligent summary using OpenAI..."):
+        with st.spinner("Generating intelligent summary..."):
             try:
-                if st.session_state.openai_api_key:
-                    summary, success = summarize_with_openai(transcript)
+                video_title = get_video_title(video_id)
+                
+                if st.session_state.openai_api_key and st.session_state.openai_available:
+                    summary, success = summarize_with_openai(transcript, video_title)
                     if success:
                         st.session_state.summary = summary
                     else:
@@ -359,7 +330,8 @@ def main():
                 st.write(summary)
                 
                 # Display word count for summary
-                st.info(f"Summary length: {count_words(summary)} words (reduced by {int((1 - count_words(summary)/count_words(transcript)) * 100)}%)")
+                if transcript:
+                    st.info(f"Summary length: {count_words(summary)} words (reduced by {int((1 - count_words(summary)/count_words(transcript)) * 100)}%)")
                     
             except Exception as e:
                 st.error(f"Error during summarization: {str(e)}")
