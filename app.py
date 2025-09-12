@@ -6,9 +6,10 @@ import os
 from youtube_transcript_api import YouTubeTranscriptApi
 from youtube_transcript_api._errors import TranscriptsDisabled, NoTranscriptFound
 from pytube import YouTube
+from pydub import AudioSegment
 
 # ------------------------------------------------
-# STREAMLIT PAGE CONFIG
+# STREAMLIT CONFIG
 # ------------------------------------------------
 st.set_page_config(
     page_title="YouTube Video Summarizer",
@@ -18,10 +19,9 @@ st.set_page_config(
 )
 
 # ------------------------------------------------
-# HELPER FUNCTIONS
+# HELPERS
 # ------------------------------------------------
 def extract_video_id(url: str):
-    """Extract YouTube video ID from URL"""
     patterns = [
         r"(?:https?:\/\/)?(?:www\.)?(?:youtube\.com\/(?:watch\?v=|embed\/)|youtu\.be\/)([^&?\/\s]{11})",
         r"^([^&?\/\s]{11})$"
@@ -34,7 +34,6 @@ def extract_video_id(url: str):
 
 
 def get_transcript_youtube(video_id: str):
-    """Try fetching transcript via youtube-transcript-api"""
     try:
         transcript_list = YouTubeTranscriptApi.get_transcript(video_id, languages=["en"])
         transcript = " ".join([x["text"] for x in transcript_list if x["text"].strip()])
@@ -48,7 +47,7 @@ def get_transcript_youtube(video_id: str):
 
 
 def get_transcript_whisper(video_id: str, client: OpenAI):
-    """Fallback: download audio and transcribe with Whisper API"""
+    """Download audio, split into <25MB chunks, transcribe with Whisper"""
     try:
         yt = YouTube(f"https://www.youtube.com/watch?v={video_id}")
         audio_stream = yt.streams.filter(only_audio=True).first()
@@ -56,30 +55,41 @@ def get_transcript_whisper(video_id: str, client: OpenAI):
         tmp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
         audio_stream.download(filename=tmp_file.name)
 
-        with open(tmp_file.name, "rb") as f:
-            transcript_response = client.audio.transcriptions.create(
-                model="whisper-1",
-                file=f
-            )
+        # Convert to mp3 using pydub
+        audio = AudioSegment.from_file(tmp_file.name)
+        os.unlink(tmp_file.name)
 
-        os.unlink(tmp_file.name)  # cleanup
-        return transcript_response.text, "Success (Whisper)"
+        # Whisper limit: ~25 MB → about 10 min of mp3 audio
+        chunk_length_ms = 10 * 60 * 1000
+        chunks = [audio[i:i + chunk_length_ms] for i in range(0, len(audio), chunk_length_ms)]
+
+        transcripts = []
+        for i, chunk in enumerate(chunks):
+            chunk_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3")
+            chunk.export(chunk_file.name, format="mp3")
+
+            with open(chunk_file.name, "rb") as f:
+                resp = client.audio.transcriptions.create(
+                    model="whisper-1",
+                    file=f
+                )
+                transcripts.append(resp.text)
+
+            os.unlink(chunk_file.name)
+
+        return " ".join(transcripts), "Success (Whisper)"
     except Exception as e:
         return None, f"Whisper transcription failed: {str(e)}"
 
 
 def get_transcript(video_id: str, client: OpenAI):
-    """Try captions first, fallback to Whisper if needed"""
     transcript, status = get_transcript_youtube(video_id)
     if transcript:
         return transcript, status
-
-    transcript, status = get_transcript_whisper(video_id, client)
-    return transcript, status
+    return get_transcript_whisper(video_id, client)
 
 
 def summarize_transcript(transcript: str, client: OpenAI, model="gpt-3.5-turbo"):
-    """Summarize transcript using GPT"""
     try:
         response = client.chat.completions.create(
             model=model,
@@ -96,7 +106,7 @@ def summarize_transcript(transcript: str, client: OpenAI, model="gpt-3.5-turbo")
 
 
 # ------------------------------------------------
-# MAIN APP
+# MAIN
 # ------------------------------------------------
 def main():
     st.title("📺 YouTube Video Summarizer")
@@ -113,7 +123,7 @@ def main():
             video_id = extract_video_id(url)
 
         if not video_id:
-            st.error("Invalid YouTube URL. Please check and try again.")
+            st.error("Invalid YouTube URL.")
             return
 
         st.video(f"https://www.youtube.com/watch?v={video_id}")
@@ -135,10 +145,6 @@ def main():
 
         st.markdown("### 📝 Summary")
         st.write(summary)
-
-        if st.button("Copy Summary"):
-            st.code(summary)
-            st.success("Summary copied to clipboard!")
 
 
 if __name__ == "__main__":
