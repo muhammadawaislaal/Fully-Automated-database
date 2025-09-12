@@ -1,10 +1,8 @@
 import streamlit as st
-import openai
+from openai import OpenAI
 import re
-import requests
 import tempfile
 import os
-from urllib.parse import urlparse, parse_qs
 from youtube_transcript_api import YouTubeTranscriptApi
 from youtube_transcript_api._errors import TranscriptsDisabled, NoTranscriptFound
 from pytube import YouTube
@@ -40,7 +38,7 @@ def get_transcript_youtube(video_id: str):
     try:
         transcript_list = YouTubeTranscriptApi.get_transcript(video_id, languages=["en"])
         transcript = " ".join([x["text"] for x in transcript_list if x["text"].strip()])
-        return transcript, "Success"
+        return transcript, "Success (captions)"
     except TranscriptsDisabled:
         return None, "Transcripts are disabled for this video."
     except NoTranscriptFound:
@@ -49,17 +47,14 @@ def get_transcript_youtube(video_id: str):
         return None, f"Error fetching transcript: {str(e)}"
 
 
-def get_transcript_whisper(video_id: str, api_key: str):
+def get_transcript_whisper(video_id: str, client: OpenAI):
     """Fallback: download audio and transcribe with Whisper API"""
     try:
         yt = YouTube(f"https://www.youtube.com/watch?v={video_id}")
         audio_stream = yt.streams.filter(only_audio=True).first()
 
-        # Save temp file
         tmp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
         audio_stream.download(filename=tmp_file.name)
-
-        client = openai.OpenAI(api_key=api_key)
 
         with open(tmp_file.name, "rb") as f:
             transcript_response = client.audio.transcriptions.create(
@@ -73,21 +68,18 @@ def get_transcript_whisper(video_id: str, api_key: str):
         return None, f"Whisper transcription failed: {str(e)}"
 
 
-def get_transcript(video_id: str, api_key: str):
+def get_transcript(video_id: str, client: OpenAI):
     """Try captions first, fallback to Whisper if needed"""
     transcript, status = get_transcript_youtube(video_id)
     if transcript:
         return transcript, status
 
-    # If captions unavailable, try Whisper
-    transcript, status = get_transcript_whisper(video_id, api_key)
+    transcript, status = get_transcript_whisper(video_id, client)
     return transcript, status
 
 
-def summarize_transcript(transcript: str, api_key: str, model="gpt-3.5-turbo"):
+def summarize_transcript(transcript: str, client: OpenAI, model="gpt-3.5-turbo"):
     """Summarize transcript using GPT"""
-    client = openai.OpenAI(api_key=api_key)
-
     try:
         response = client.chat.completions.create(
             model=model,
@@ -111,6 +103,7 @@ def main():
     st.markdown("Paste a YouTube link and get an AI-powered summary.")
 
     api_key = st.secrets["OPENAI_API_KEY"]
+    client = OpenAI(api_key=api_key)
 
     url = st.text_input("YouTube Video URL", placeholder="Paste YouTube URL here...")
     generate_btn = st.button("Generate Summary")
@@ -126,7 +119,7 @@ def main():
         st.video(f"https://www.youtube.com/watch?v={video_id}")
 
         with st.spinner("Fetching transcript..."):
-            transcript, status = get_transcript(video_id, api_key)
+            transcript, status = get_transcript(video_id, client)
 
         if not transcript:
             st.error(f"Could not retrieve transcript: {status}")
@@ -138,7 +131,7 @@ def main():
             st.text_area("Transcript", transcript, height=300)
 
         with st.spinner("Generating summary..."):
-            summary = summarize_transcript(transcript, api_key)
+            summary = summarize_transcript(transcript, client)
 
         st.markdown("### 📝 Summary")
         st.write(summary)
