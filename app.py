@@ -4,20 +4,26 @@ import re
 import requests
 import tempfile
 import os
-import yt_dlp
+from urllib.parse import urlparse, parse_qs
 from youtube_transcript_api import YouTubeTranscriptApi
 from youtube_transcript_api._errors import TranscriptsDisabled, NoTranscriptFound
-import tiktoken
+from pytube import YouTube
 
-# ----------------- CONFIG -----------------
-st.set_page_config(page_title="YouTube Video Summarizer", page_icon="📺", layout="centered")
+# ------------------------------------------------
+# STREAMLIT PAGE CONFIG
+# ------------------------------------------------
+st.set_page_config(
+    page_title="YouTube Video Summarizer",
+    page_icon="📺",
+    layout="centered",
+    initial_sidebar_state="expanded"
+)
 
-if "summary" not in st.session_state:
-    st.session_state.summary = None
-
-# ----------------- HELPERS -----------------
+# ------------------------------------------------
+# HELPER FUNCTIONS
+# ------------------------------------------------
 def extract_video_id(url: str):
-    """Extract YouTube video ID"""
+    """Extract YouTube video ID from URL"""
     patterns = [
         r"(?:https?:\/\/)?(?:www\.)?(?:youtube\.com\/(?:watch\?v=|embed\/)|youtu\.be\/)([^&?\/\s]{11})",
         r"^([^&?\/\s]{11})$"
@@ -28,8 +34,9 @@ def extract_video_id(url: str):
             return match.group(1)
     return None
 
-def get_transcript_from_youtube(video_id: str):
-    """Try fetching transcript using YouTubeTranscriptApi"""
+
+def get_transcript_youtube(video_id: str):
+    """Try fetching transcript via youtube-transcript-api"""
     try:
         transcript_list = YouTubeTranscriptApi.get_transcript(video_id, languages=["en"])
         transcript = " ".join([x["text"] for x in transcript_list if x["text"].strip()])
@@ -41,147 +48,105 @@ def get_transcript_from_youtube(video_id: str):
     except Exception as e:
         return None, f"Error fetching transcript: {str(e)}"
 
-def get_transcript_with_whisper(video_url: str, api_key: str):
-    """Download audio and transcribe with Whisper"""
+
+def get_transcript_whisper(video_id: str, api_key: str):
+    """Fallback: download audio and transcribe with Whisper API"""
     try:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            audio_path = os.path.join(tmpdir, "audio.mp3")
+        yt = YouTube(f"https://www.youtube.com/watch?v={video_id}")
+        audio_stream = yt.streams.filter(only_audio=True).first()
 
-            # Download audio
-            ydl_opts = {
-                "format": "bestaudio/best",
-                "outtmpl": audio_path,
-                "quiet": True,
-                "noplaylist": True,
-                "extractaudio": True,
-                "audioformat": "mp3"
-            }
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                ydl.download([video_url])
+        # Save temp file
+        tmp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
+        audio_stream.download(filename=tmp_file.name)
 
-            # OpenAI Whisper transcription
-            openai.api_key = api_key
-            with open(audio_path, "rb") as f:
-                transcript = openai.Audio.transcriptions.create(
-                    model="whisper-1",
-                    file=f
-                )
-            return transcript.text, "Transcribed with Whisper"
+        client = openai.OpenAI(api_key=api_key)
+
+        with open(tmp_file.name, "rb") as f:
+            transcript_response = client.audio.transcriptions.create(
+                model="whisper-1",
+                file=f
+            )
+
+        os.unlink(tmp_file.name)  # cleanup
+        return transcript_response.text, "Success (Whisper)"
     except Exception as e:
-        return None, f"Whisper failed: {str(e)}"
+        return None, f"Whisper transcription failed: {str(e)}"
 
-def count_tokens(text):
+
+def get_transcript(video_id: str, api_key: str):
+    """Try captions first, fallback to Whisper if needed"""
+    transcript, status = get_transcript_youtube(video_id)
+    if transcript:
+        return transcript, status
+
+    # If captions unavailable, try Whisper
+    transcript, status = get_transcript_whisper(video_id, api_key)
+    return transcript, status
+
+
+def summarize_transcript(transcript: str, api_key: str, model="gpt-3.5-turbo"):
+    """Summarize transcript using GPT"""
+    client = openai.OpenAI(api_key=api_key)
+
     try:
-        encoding = tiktoken.encoding_for_model("gpt-3.5-turbo")
-        return len(encoding.encode(text))
-    except Exception:
-        return len(text.split())
-
-def split_text(text, max_tokens=3000):
-    try:
-        encoding = tiktoken.encoding_for_model("gpt-3.5-turbo")
-        tokens = encoding.encode(text)
-        chunks = []
-        for i in range(0, len(tokens), max_tokens):
-            chunk_tokens = tokens[i:i+max_tokens]
-            chunks.append(encoding.decode(chunk_tokens))
-        return chunks
-    except Exception:
-        words = text.split()
-        chunks, current = [], []
-        count = 0
-        for w in words:
-            if count + len(w.split()) > max_tokens:
-                chunks.append(" ".join(current))
-                current = [w]
-                count = len(w.split())
-            else:
-                current.append(w)
-                count += len(w.split())
-        if current:
-            chunks.append(" ".join(current))
-        return chunks
-
-def summarize_transcript(transcript, api_key, model="gpt-3.5-turbo"):
-    openai.api_key = api_key
-    token_count = count_tokens(transcript)
-
-    if token_count > 3000:
-        chunks = split_text(transcript)
-        summaries = []
-        for i, chunk in enumerate(chunks):
-            with st.spinner(f"Summarizing part {i+1}/{len(chunks)}..."):
-                resp = openai.ChatCompletion.create(
-                    model=model,
-                    messages=[
-                        {"role": "system", "content": "You are a helpful assistant that summarizes YouTube transcripts."},
-                        {"role": "user", "content": f"Summarize this transcript section:\n\n{chunk}"}
-                    ],
-                    max_tokens=500,
-                    temperature=0.3
-                )
-                summaries.append(resp.choices[0].message.content.strip())
-        final_prompt = "Combine these summaries into one coherent video summary:\n\n" + "\n\n".join(summaries)
-        resp = openai.ChatCompletion.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": "You write comprehensive video summaries."},
-                {"role": "user", "content": final_prompt}
-            ],
-            max_tokens=600,
-            temperature=0.3
-        )
-        return resp.choices[0].message.content.strip()
-    else:
-        resp = openai.ChatCompletion.create(
+        response = client.chat.completions.create(
             model=model,
             messages=[
                 {"role": "system", "content": "You are a helpful assistant that summarizes YouTube transcripts."},
-                {"role": "user", "content": transcript}
+                {"role": "user", "content": f"Summarize this transcript clearly and concisely:\n\n{transcript}"}
             ],
-            max_tokens=800,
-            temperature=0.3
+            max_tokens=600,
+            temperature=0.4
         )
-        return resp.choices[0].message.content.strip()
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        return f"Error during summarization: {str(e)}"
 
-# ----------------- UI -----------------
+
+# ------------------------------------------------
+# MAIN APP
+# ------------------------------------------------
 def main():
     st.title("📺 YouTube Video Summarizer")
-    st.markdown("Summarize **any YouTube video** with captions or Whisper fallback")
+    st.markdown("Paste a YouTube link and get an AI-powered summary.")
 
-    api_key = st.text_input("🔑 OpenAI API Key", type="password")
-    url = st.text_input("🎥 YouTube URL", placeholder="Paste a YouTube link...")
-    if st.button("Generate Summary", disabled=not api_key):
-        video_id = extract_video_id(url)
+    api_key = st.secrets["OPENAI_API_KEY"]
+
+    url = st.text_input("YouTube Video URL", placeholder="Paste YouTube URL here...")
+    generate_btn = st.button("Generate Summary")
+
+    if generate_btn and url:
+        with st.spinner("Extracting video ID..."):
+            video_id = extract_video_id(url)
+
         if not video_id:
-            st.error("Invalid YouTube URL")
+            st.error("Invalid YouTube URL. Please check and try again.")
             return
 
         st.video(f"https://www.youtube.com/watch?v={video_id}")
 
         with st.spinner("Fetching transcript..."):
-            transcript, status = get_transcript_from_youtube(video_id)
-
-        if not transcript:
-            st.warning(f"{status} → Falling back to Whisper...")
-            with st.spinner("Downloading audio & transcribing with Whisper..."):
-                transcript, status = get_transcript_with_whisper(url, api_key)
+            transcript, status = get_transcript(video_id, api_key)
 
         if not transcript:
             st.error(f"Could not retrieve transcript: {status}")
             return
 
-        st.success("Transcript ready ✅")
-        with st.expander("View transcript"):
-            st.text(transcript[:2000] + "..." if len(transcript) > 2000 else transcript)
+        st.success(f"Transcript retrieved! ({status})")
+
+        with st.expander("View Transcript"):
+            st.text_area("Transcript", transcript, height=300)
 
         with st.spinner("Generating summary..."):
             summary = summarize_transcript(transcript, api_key)
 
-        if summary:
-            st.session_state.summary = summary
-            st.markdown("### 📝 Summary")
-            st.write(summary)
+        st.markdown("### 📝 Summary")
+        st.write(summary)
+
+        if st.button("Copy Summary"):
+            st.code(summary)
+            st.success("Summary copied to clipboard!")
+
 
 if __name__ == "__main__":
     main()
