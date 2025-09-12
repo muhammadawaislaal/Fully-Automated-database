@@ -36,38 +36,21 @@ def extract_video_id(url):
             return match.group(1)
     return None
 
-def get_transcript(video_id, languages=None):
+def get_transcript(video_id):
     """Fetch transcript for a YouTube video"""
     try:
-        # Try to get transcript directly
-        transcript_list = YouTubeTranscriptApi.get_transcript(video_id, languages=languages)
+        # Get transcript using the correct API method
+        transcript_list = YouTubeTranscriptApi.get_transcript(video_id)
         transcript = " ".join([entry['text'] for entry in transcript_list])
-        return transcript, "en"  # Default to English if we can't detect
-        
+        return transcript, "en"
     except TranscriptsDisabled:
         return None, "Transcripts are disabled for this video."
     except NoTranscriptFound:
-        # Try to find any available transcript
-        try:
-            # List available transcripts first
-            available_transcripts = YouTubeTranscriptApi.list_transcripts(video_id)
-            
-            # Try to find a working transcript
-            for transcript in available_transcripts:
-                try:
-                    transcript_data = transcript.fetch()
-                    transcript_text = " ".join([entry['text'] for entry in transcript_data])
-                    return transcript_text, transcript.language_code
-                except:
-                    continue
-                    
-            return None, "No transcript found for this video."
-        except:
-            return None, "No transcript found for this video."
+        return None, "No transcript found for this video."
     except VideoUnavailable:
         return None, "Video is unavailable."
     except Exception as e:
-        return None, f"Error fetching transcript: {str(e)}"
+        return None, f"Error: {str(e)}"
 
 def count_tokens(text):
     """Count tokens in text using tiktoken for GPT-3.5"""
@@ -111,27 +94,18 @@ def split_text(text, max_tokens=3000):
         
         return chunks
 
-def summarize_transcript(transcript, api_key, language="en", model="gpt-3.5-turbo"):
-    """Summarize transcript using OpenAI API with language support"""
+def summarize_transcript(transcript, api_key, model="gpt-3.5-turbo"):
+    """Summarize transcript using OpenAI API"""
     # Set the API key
     openai.api_key = api_key
     
     # Check token count and split if necessary
     token_count = count_tokens(transcript)
     
-    # Language-specific prompts
-    language_prompts = {
-        "en": "Please provide a comprehensive summary of the following YouTube video transcript. Include main points, key insights, and conclusions. Structure your response clearly:",
-        "ur": "براہ کرم درج ذیل یوٹیوب ویڈیو ٹرانسکرپٹ کا جامع خلاصہ پیش کریں۔ اہم نکات، کلیدی بصیرتیں اور نتائج شامل کریں۔ اپنا جواب واضح ساخت میں پیش کریں:",
-        "es": "Proporcione un resumen completo de la siguiente transcripción de video de YouTube. Incluya puntos principales, ideas clave y conclusiones. Estructure su respuesta claramente:",
-        "fr": "Veuillez fournir un résumé complet de la transcription suivante de la vidéo YouTube. Incluez les points principaux, les idées clés et les conclusions. Structurez votre respuesta claramente:",
-        "de": "Bitte geben Sie eine umfassende Zusammenfassung des folgenden YouTube-Videotranskripts. Fügen Sie Hauptpunkte, wichtige Erkenntnisse und Schlussfolgerungen hinzu. Strukturieren Sie Ihre Antwort klar:",
-        "hi": "कृपया निम्नलिखित YouTube वीडियो ट्रांसक्रिप्ट का व्यापक सारांश प्रदान करें। मुख्य बिंदु, प्रमुख अंतर्दृष्टि और निष्कर्ष शामिल करें। अपनी प्रतिक्रिया को स्पष्ट रूप से संरचित करें:",
-        "ar": "يرجى تقديم ملخص شامل لنص فيديo YouTube التالي. قم بتضمين النقاط الرئيسية والرؤى الأساسية والاستنتاجات. هيكل إجابتك بوضوح:",
-    }
+    prompt = f"""Please provide a comprehensive summary of the following YouTube video transcript. 
+    Include main points, key insights, and conclusions. Structure your response clearly:
     
-    base_prompt = language_prompts.get(language, language_prompts["en"])
-    full_prompt = f"{base_prompt}\n\n{transcript}"
+    {transcript}"""
     
     if token_count > 3000:
         chunks = split_text(transcript)
@@ -139,13 +113,13 @@ def summarize_transcript(transcript, api_key, language="en", model="gpt-3.5-turb
         
         for i, chunk in enumerate(chunks):
             with st.spinner(f"Summarizing part {i+1}/{len(chunks)}..."):
-                chunk_prompt = f"{base_prompt}\n\n{chunk}"
+                chunk_prompt = f"Please summarize this section of a video transcript:\n\n{chunk}"
                 
                 try:
                     response = openai.ChatCompletion.create(
                         model=model,
                         messages=[
-                            {"role": "system", "content": "You are a helpful assistant that summarizes YouTube video transcripts in a clear, structured manner."},
+                            {"role": "system", "content": "You are a helpful assistant that summarizes YouTube video transcripts."},
                             {"role": "user", "content": chunk_prompt}
                         ],
                         max_tokens=500,
@@ -158,13 +132,13 @@ def summarize_transcript(transcript, api_key, language="en", model="gpt-3.5-turb
         
         # Combine and summarize the summaries
         combined_summaries = "\n\n".join(summaries)
-        final_prompt = f"Please combine these section summaries into a coherent overall summary of the video. Provide a comprehensive overview with main points and key insights:\n\n{combined_summaries}"
+        final_prompt = f"Please combine these section summaries into a coherent overall summary of the video:\n\n{combined_summaries}"
         
         try:
             response = openai.ChatCompletion.create(
                 model=model,
                 messages=[
-                    {"role": "system", "content": "You are a helpful assistant that creates comprehensive video summaries."},
+                    {"role": "system", "content": "You create comprehensive video summaries."},
                     {"role": "user", "content": final_prompt}
                 ],
                 max_tokens=600,
@@ -179,8 +153,8 @@ def summarize_transcript(transcript, api_key, language="en", model="gpt-3.5-turb
             response = openai.ChatCompletion.create(
                 model=model,
                 messages=[
-                    {"role": "system", "content": "You are a helpful assistant that summarizes YouTube video transcripts in a clear, structured manner."},
-                    {"role": "user", "content": full_prompt}
+                    {"role": "system", "content": "You are a helpful assistant that summarizes YouTube video transcripts."},
+                    {"role": "user", "content": prompt}
                 ],
                 max_tokens=800,
                 temperature=0.3
@@ -217,39 +191,19 @@ def main():
                 st.session_state.api_key_configured = False
                 st.experimental_rerun()
         
-        # Language selection
-        st.markdown("---")
-        st.markdown("### Language Preferences")
-        language_options = {
-            "Auto-detect": "auto",
-            "English": "en",
-            "Urdu": "ur",
-            "Spanish": "es",
-            "French": "fr",
-            "German": "de",
-            "Hindi": "hi",
-            "Arabic": "ar",
-        }
-        selected_language = st.selectbox(
-            "Preferred language for transcript:",
-            options=list(language_options.keys()),
-            index=0
-        )
-        
         st.markdown("---")
         st.markdown("### How to use")
         st.markdown("""
         1. Enter your OpenAI API key (if not in secrets)
         2. Paste a YouTube URL
-        3. Select language preference (optional)
-        4. Click 'Generate Summary'
-        5. View and copy your summary
+        3. Click 'Generate Summary'
+        4. View and copy your summary
         """)
         st.markdown("---")
         st.markdown("### Note")
         st.markdown("""
         - This tool extracts the transcript from YouTube videos
-        - Supports multiple languages including English, Urdu, Spanish, etc.
+        - Uses AI to generate a summary
         - Not all videos have available transcripts
         - Longer videos may take more time to process
         """)
@@ -277,18 +231,11 @@ def main():
         st.markdown(f"### Video Preview")
         st.video(f"https://www.youtube.com/watch?v={video_id}")
         
-        # Determine which languages to try
-        if selected_language != "Auto-detect":
-            languages_to_try = [language_options[selected_language]]
-        else:
-            # Try common languages in order of preference
-            languages_to_try = ['en', 'ur', 'es', 'fr', 'de', 'hi', 'ar']
-        
         with st.spinner("Fetching transcript..."):
-            transcript, transcript_info = get_transcript(video_id, languages=languages_to_try)
+            transcript, error_message = get_transcript(video_id)
             
         if not transcript:
-            st.error(f"Could not retrieve transcript for this video. {transcript_info}")
+            st.error(f"Could not retrieve transcript for this video. {error_message}")
             return
             
         st.success("Successfully retrieved transcript!")
@@ -297,7 +244,7 @@ def main():
             st.text(transcript[:1000] + "..." if len(transcript) > 1000 else transcript)
             
         with st.spinner("Generating summary (this may take a while for longer videos)..."):
-            summary = summarize_transcript(transcript, api_key, language=language_options.get(selected_language, "en"))
+            summary = summarize_transcript(transcript, api_key)
             
         if summary:
             st.session_state.summary = summary
