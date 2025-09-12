@@ -4,8 +4,45 @@ import re
 import tiktoken
 import requests
 import json
-from youtube_transcript_api import YouTubeTranscriptApi
-from youtube_transcript_api._errors import TranscriptsDisabled, NoTranscriptAvailable, VideoUnavailable, TooManyRequests
+
+# Try to import YouTubeTranscriptApi with compatibility handling
+try:
+    from youtube_transcript_api import YouTubeTranscriptApi
+    from youtube_transcript_api._errors import TranscriptsDisabled, VideoUnavailable, TooManyRequests
+    
+    # Handle different versions of the library
+    try:
+        from youtube_transcript_api._errors import NoTranscriptFound
+        NO_TRANSCRIPT_ERROR = NoTranscriptFound
+    except ImportError:
+        try:
+            from youtube_transcript_api._errors import NoTranscriptAvailable
+            NO_TRANSCRIPT_ERROR = NoTranscriptAvailable
+        except ImportError:
+            # Fallback if neither exists
+            class NoTranscriptFound(Exception):
+                pass
+            NO_TRANSCRIPT_ERROR = NoTranscriptFound
+            
+except ImportError:
+    st.error("youtube-transcript-api is not installed. Please add it to your requirements.txt")
+    # Create dummy classes to prevent further errors
+    class YouTubeTranscriptApi:
+        @staticmethod
+        def list_transcripts(video_id):
+            raise Exception("youtube-transcript-api not installed")
+    
+    class TranscriptsDisabled(Exception):
+        pass
+        
+    class VideoUnavailable(Exception):
+        pass
+        
+    class TooManyRequests(Exception):
+        pass
+        
+    class NO_TRANSCRIPT_ERROR(Exception):
+        pass
 
 # Set page configuration
 st.set_page_config(
@@ -59,7 +96,7 @@ def get_transcript(video_id):
     
     except TranscriptsDisabled:
         return None, "Transcripts are disabled for this video"
-    except NoTranscriptAvailable:
+    except NO_TRANSCRIPT_ERROR:
         return None, "No transcript available for this video"
     except VideoUnavailable:
         return None, "Video is unavailable"
@@ -238,13 +275,20 @@ def main():
     col1, col2, col3 = st.columns(3)
     with col1:
         if st.button("TED Talk Example"):
-            url = "https://www.youtube.com/watch?v=Lp7E973zozs"
+            st.session_state.url = "https://www.youtube.com/watch?v=Lp7E973zozs"
+            st.experimental_rerun()
     with col2:
         if st.button("Google I/O Example"):
-            url = "https://www.youtube.com/watch?v=JcP7wX08vq0"
+            st.session_state.url = "https://www.youtube.com/watch?v=JcP7wX08vq0"
+            st.experimental_rerun()
     with col3:
         if st.button("Microsoft Build Example"):
-            url = "https://www.youtube.com/watch?v=8S0FDjFBj8o"
+            st.session_state.url = "https://www.youtube.com/watch?v=8S0FDjFBj8o"
+            st.experimental_rerun()
+    
+    # Get URL from session state if set by buttons
+    if hasattr(st.session_state, 'url'):
+        url = st.session_state.url
     
     generate_btn = st.button("Generate Summary", disabled=not st.session_state.api_key_configured)
     
