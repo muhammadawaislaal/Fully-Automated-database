@@ -4,6 +4,7 @@ import requests
 from bs4 import BeautifulSoup
 import json
 import time
+import openai
 import xml.etree.ElementTree as ET
 
 # Set page configuration
@@ -21,6 +22,14 @@ if 'video_id' not in st.session_state:
     st.session_state.video_id = None
 if 'transcript_status' not in st.session_state:
     st.session_state.transcript_status = None
+
+# Set up OpenAI API
+if 'openai_api_key' not in st.session_state:
+    if 'openai' in st.secrets and 'api_key' in st.secrets.openai:
+        st.session_state.openai_api_key = st.secrets.openai.api_key
+        openai.api_key = st.secrets.openai.api_key
+    else:
+        st.session_state.openai_api_key = None
 
 def extract_video_id(url):
     """Extract YouTube video ID from URL"""
@@ -190,8 +199,52 @@ def generate_realistic_transcript(video_title):
     
     return transcript
 
+def summarize_with_openai(text):
+    """Summarize text using OpenAI API"""
+    try:
+        if not st.session_state.openai_api_key:
+            return "OpenAI API key not found. Please check your Streamlit secrets configuration.", False
+        
+        # Truncate text if it's too long for the API
+        max_length = 12000
+        if len(text) > max_length:
+            text = text[:max_length] + "... [content truncated for length]"
+        
+        prompt = f"""
+        Please provide a comprehensive and accurate summary of the following video transcript. 
+        Focus on the main points, key insights, and important information. 
+        Make the summary concise but informative, capturing the essence of the content.
+        
+        Transcript:
+        {text}
+        
+        Summary:
+        """
+        
+        response = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {"role": "system", "content": "You are a helpful assistant that creates accurate and concise summaries of video content."},
+                {"role": "user", "content": prompt}
+            ],
+            max_tokens=500,
+            temperature=0.3
+        )
+        
+        summary = response.choices[0].message.content.strip()
+        return summary, True
+        
+    except openai.error.AuthenticationError:
+        return "Authentication error. Please check your OpenAI API key in the Streamlit secrets.", False
+    except openai.error.RateLimitError:
+        return "Rate limit exceeded. Please try again later.", False
+    except openai.error.OpenAIError as e:
+        return f"OpenAI API error: {str(e)}", False
+    except Exception as e:
+        return f"Unexpected error: {str(e)}", False
+
 def summarize_text(text):
-    """Advanced local summarization algorithm"""
+    """Fallback local summarization algorithm if OpenAI fails"""
     # Split into sentences
     sentences = re.split(r'(?<=[.!?])\s+', text)
     sentences = [s.strip() for s in sentences if len(s.strip()) > 10]
@@ -233,7 +286,11 @@ def count_words(text):
 
 def main():
     st.title("📺 YouTube Video Summarizer")
-    st.markdown("Generate intelligent summaries of YouTube videos - **100% FREE & NO API KEYS!**")
+    st.markdown("Generate intelligent summaries of YouTube videos using OpenAI's advanced AI")
+    
+    # Check for API key
+    if not st.session_state.openai_api_key:
+        st.warning("⚠️ OpenAI API key not found. Please make sure you've added it to your Streamlit secrets. Using fallback summarization method.")
     
     # Main content area
     url = st.text_input("YouTube Video URL", placeholder="Paste YouTube URL here...")
@@ -282,19 +339,27 @@ def main():
         with st.expander("View Raw Transcript"):
             st.text(transcript[:1000] + "..." if len(transcript) > 1000 else transcript)
             
-        with st.spinner("Generating intelligent summary..."):
+        with st.spinner("Generating intelligent summary using OpenAI..."):
             try:
-                summary = summarize_text(transcript)
-                
-                if summary:
+                if st.session_state.openai_api_key:
+                    summary, success = summarize_with_openai(transcript)
+                    if success:
+                        st.session_state.summary = summary
+                    else:
+                        st.warning(f"OpenAI summarization failed: {summary}. Using fallback method.")
+                        summary = summarize_text(transcript)
+                        st.session_state.summary = summary
+                else:
+                    summary = summarize_text(transcript)
                     st.session_state.summary = summary
-                    st.markdown("---")
-                    st.markdown("### 📝 Intelligent Summary")
-                    st.success("Summary generated successfully using advanced local AI!")
-                    st.write(summary)
-                    
-                    # Display word count for summary
-                    st.info(f"Summary length: {count_words(summary)} words (reduced by {int((1 - count_words(summary)/count_words(transcript)) * 100)}%)")
+                
+                st.markdown("---")
+                st.markdown("### 📝 Intelligent Summary")
+                st.success("Summary generated successfully!")
+                st.write(summary)
+                
+                # Display word count for summary
+                st.info(f"Summary length: {count_words(summary)} words (reduced by {int((1 - count_words(summary)/count_words(transcript)) * 100)}%)")
                     
             except Exception as e:
                 st.error(f"Error during summarization: {str(e)}")
