@@ -13,14 +13,22 @@ from bs4 import XMLParsedAsHTMLWarning
 # Suppress XML parsing warnings
 warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning)
 
-# Try to import openai, install if not available
+# Try to import openai and groq, install if not available
 try:
-    import openai
+    from openai import OpenAI
 except ImportError:
     import subprocess
     import sys
     subprocess.check_call([sys.executable, "-m", "pip", "install", "openai"])
-    import openai
+    from openai import OpenAI
+
+try:
+    import groq
+except ImportError:
+    import subprocess
+    import sys
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "groq"])
+    import groq
 
 # Set page configuration
 st.set_page_config(
@@ -39,50 +47,88 @@ if 'transcript_status' not in st.session_state:
     st.session_state.transcript_status = None
 if 'openai_available' not in st.session_state:
     st.session_state.openai_available = False
+if 'groq_available' not in st.session_state:
+    st.session_state.groq_available = False
 if 'openai_api_key' not in st.session_state:
     st.session_state.openai_api_key = None
+if 'groq_api_key' not in st.session_state:
+    st.session_state.groq_api_key = None
+if 'openai_client' not in st.session_state:
+    st.session_state.openai_client = None
+if 'groq_client' not in st.session_state:
+    st.session_state.groq_client = None
+if 'api_provider' not in st.session_state:
+    st.session_state.api_provider = None
 
-# Set up OpenAI API
-def setup_openai():
+# Set up API clients
+def setup_apis():
     try:
         # Check if OpenAI API key is available in secrets
         if hasattr(st, 'secrets'):
-            # Method 1: Check for openai.api_key directly
+            # Check for OpenAI API key
             try:
                 if hasattr(st.secrets, 'openai') and hasattr(st.secrets.openai, 'api_key'):
                     st.session_state.openai_api_key = st.secrets.openai.api_key
-                    openai.api_key = st.session_state.openai_api_key
+                    st.session_state.openai_client = OpenAI(api_key=st.session_state.openai_api_key)
                     st.session_state.openai_available = True
-                    return True
+                    st.session_state.api_provider = "openai"
             except:
                 pass
             
-            # Method 2: Check for dictionary-style access
+            # Check for Groq API key
+            try:
+                if hasattr(st.secrets, 'groq') and hasattr(st.secrets.groq, 'api_key'):
+                    st.session_state.groq_api_key = st.secrets.groq.api_key
+                    st.session_state.groq_client = groq.Client(api_key=st.session_state.groq_api_key)
+                    st.session_state.groq_available = True
+                    st.session_state.api_provider = "groq"
+            except:
+                pass
+                
+            # Check for dictionary-style access
             try:
                 if 'openai' in st.secrets and 'api_key' in st.secrets['openai']:
                     st.session_state.openai_api_key = st.secrets['openai']['api_key']
-                    openai.api_key = st.session_state.openai_api_key
+                    st.session_state.openai_client = OpenAI(api_key=st.session_state.openai_api_key)
                     st.session_state.openai_available = True
-                    return True
+                    st.session_state.api_provider = "openai"
             except:
                 pass
                 
-            # Method 3: Check for direct API key in secrets
+            try:
+                if 'groq' in st.secrets and 'api_key' in st.secrets['groq']:
+                    st.session_state.groq_api_key = st.secrets['groq']['api_key']
+                    st.session_state.groq_client = groq.Client(api_key=st.session_state.groq_api_key)
+                    st.session_state.groq_available = True
+                    st.session_state.api_provider = "groq"
+            except:
+                pass
+                
+            # Check for direct API keys in secrets
             try:
                 if 'OPENAI_API_KEY' in st.secrets:
                     st.session_state.openai_api_key = st.secrets['OPENAI_API_KEY']
-                    openai.api_key = st.session_state.openai_api_key
+                    st.session_state.openai_client = OpenAI(api_key=st.session_state.openai_api_key)
                     st.session_state.openai_available = True
-                    return True
+                    st.session_state.api_provider = "openai"
             except:
                 pass
                 
-        return False
+            try:
+                if 'GROQ_API_KEY' in st.secrets:
+                    st.session_state.groq_api_key = st.secrets['GROQ_API_KEY']
+                    st.session_state.groq_client = groq.Client(api_key=st.session_state.groq_api_key)
+                    st.session_state.groq_available = True
+                    st.session_state.api_provider = "groq"
+            except:
+                pass
+                
+        return st.session_state.openai_available or st.session_state.groq_available
     except Exception as e:
         return False
 
 # Run setup
-setup_openai()
+setup_apis()
 
 def extract_video_id(url):
     """Extract YouTube video ID from URL"""
@@ -211,7 +257,7 @@ def generate_realistic_transcript(video_title):
 def summarize_with_openai(text, video_title):
     """Summarize text using OpenAI API"""
     try:
-        if not st.session_state.openai_api_key:
+        if not st.session_state.openai_api_key or not st.session_state.openai_client:
             return "OpenAI API key not found.", False
         
         # Truncate text if it's too long for the API
@@ -230,7 +276,7 @@ def summarize_with_openai(text, video_title):
         Summary:
         """
         
-        response = openai.ChatCompletion.create(
+        response = st.session_state.openai_client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=[
                 {"role": "system", "content": "You are a helpful assistant that creates accurate and concise summaries of video content."},
@@ -247,13 +293,57 @@ def summarize_with_openai(text, video_title):
         error_msg = str(e)
         if "authentication" in error_msg.lower():
             return "Authentication error. Please check your OpenAI API key.", False
-        elif "rate limit" in error_msg.lower():
-            return "Rate limit exceeded. Please try again later.", False
+        elif "rate limit" in error_msg.lower() or "quota" in error_msg.lower():
+            return "Rate limit or quota exceeded. Please try again later or use a different API key.", False
         else:
             return f"OpenAI API error: {error_msg}", False
 
+def summarize_with_groq(text, video_title):
+    """Summarize text using Groq API"""
+    try:
+        if not st.session_state.groq_api_key or not st.session_state.groq_client:
+            return "Groq API key not found.", False
+        
+        # Truncate text if it's too long for the API
+        max_length = 12000
+        if len(text) > max_length:
+            text = text[:max_length] + "... [content truncated for length]"
+        
+        prompt = f"""
+        Please provide a comprehensive and accurate summary of the following video transcript from a video titled "{video_title}". 
+        Focus on the main points, key insights, and important information. 
+        Make the summary concise but informative, capturing the essence of the content.
+        
+        Transcript:
+        {text}
+        
+        Summary:
+        """
+        
+        response = st.session_state.groq_client.chat.completions.create(
+            model="llama-3.1-8b-instant",  # You can change this to other Groq models
+            messages=[
+                {"role": "system", "content": "You are a helpful assistant that creates accurate and concise summaries of video content."},
+                {"role": "user", "content": prompt}
+            ],
+            max_tokens=500,
+            temperature=0.3
+        )
+        
+        summary = response.choices[0].message.content.strip()
+        return summary, True
+        
+    except Exception as e:
+        error_msg = str(e)
+        if "authentication" in error_msg.lower():
+            return "Authentication error. Please check your Groq API key.", False
+        elif "rate limit" in error_msg.lower() or "quota" in error_msg.lower():
+            return "Rate limit or quota exceeded. Please try again later or use a different API key.", False
+        else:
+            return f"Groq API error: {error_msg}", False
+
 def summarize_text(text):
-    """Fallback local summarization algorithm if OpenAI fails"""
+    """Fallback local summarization algorithm if API fails"""
     # Split into sentences
     sentences = re.split(r'(?<=[.!?])\s+', text)
     sentences = [s.strip() for s in sentences if len(s.strip()) > 10]
@@ -295,35 +385,52 @@ def count_words(text):
 
 def main():
     st.title("📺 YouTube Video Summarizer")
-    st.markdown("Generate intelligent summaries of YouTube videos using OpenAI's advanced AI")
+    st.markdown("Generate intelligent summaries of YouTube videos using AI APIs")
     
-    # Check for API key
-    if not st.session_state.openai_available:
-        st.warning("⚠️ OpenAI API key not found in secrets. You can enter it manually below.")
+    # Check for API keys
+    if not st.session_state.openai_available and not st.session_state.groq_available:
+        st.warning("⚠️ No API keys found in secrets. You can enter them manually below.")
     
     # Manual API key input option
-    with st.expander("OpenAI API Key Configuration"):
-        st.info("Add your API key either via Streamlit secrets or manually below.")
+    with st.expander("API Key Configuration"):
+        st.info("Add your API keys either via Streamlit secrets or manually below.")
         
-        manual_api_key = st.text_input("Enter your OpenAI API key manually:", type="password", value=st.session_state.openai_api_key or "")
-        if manual_api_key:
-            st.session_state.openai_api_key = manual_api_key
-            openai.api_key = manual_api_key
-            st.session_state.openai_available = True
-            st.success("API key set successfully!")
+        # API provider selection
+        api_provider = st.radio(
+            "Select API Provider:",
+            ["OpenAI", "Groq"],
+            index=0 if st.session_state.api_provider == "openai" else 1 if st.session_state.api_provider == "groq" else 0
+        )
+        
+        if api_provider == "OpenAI":
+            manual_api_key = st.text_input("Enter your OpenAI API key manually:", type="password", value=st.session_state.openai_api_key or "")
+            if manual_api_key:
+                st.session_state.openai_api_key = manual_api_key
+                st.session_state.openai_client = OpenAI(api_key=manual_api_key)
+                st.session_state.openai_available = True
+                st.session_state.api_provider = "openai"
+                st.success("OpenAI API key set successfully!")
+        else:
+            manual_api_key = st.text_input("Enter your Groq API key manually:", type="password", value=st.session_state.groq_api_key or "")
+            if manual_api_key:
+                st.session_state.groq_api_key = manual_api_key
+                st.session_state.groq_client = groq.Client(api_key=manual_api_key)
+                st.session_state.groq_available = True
+                st.session_state.api_provider = "groq"
+                st.success("Groq API key set successfully!")
         
         if st.button("Check Secrets Configuration"):
             if hasattr(st, 'secrets'):
                 try:
                     secrets_info = "Available secrets: "
                     if hasattr(st.secrets, 'openai') and hasattr(st.secrets.openai, 'api_key'):
-                        secrets_info += "openai.api_key found! ✅"
-                    elif 'openai' in st.secrets and 'api_key' in st.secrets['openai']:
-                        secrets_info += "openai['api_key'] found! ✅"
-                    elif 'OPENAI_API_KEY' in st.secrets:
-                        secrets_info += "OPENAI_API_KEY found! ✅"
-                    else:
-                        secrets_info += "No OpenAI API key found in secrets. ❌"
+                        secrets_info += "OpenAI API key found! ✅ "
+                    if hasattr(st.secrets, 'groq') and hasattr(st.secrets.groq, 'api_key'):
+                        secrets_info += "Groq API key found! ✅ "
+                    
+                    if secrets_info == "Available secrets: ":
+                        secrets_info += "No API keys found in secrets. ❌"
+                    
                     st.info(secrets_info)
                 except Exception as e:
                     st.error(f"Error checking secrets: {str(e)}")
@@ -381,16 +488,55 @@ def main():
             try:
                 video_title = get_video_title(video_id)
                 
-                if st.session_state.openai_available and st.session_state.openai_api_key:
+                # Try OpenAI first if available and selected
+                if st.session_state.api_provider == "openai" and st.session_state.openai_available and st.session_state.openai_api_key and st.session_state.openai_client:
                     summary, success = summarize_with_openai(transcript, video_title)
                     if success:
                         st.session_state.summary = summary
                         st.success("Summary generated using OpenAI! ✅")
                     else:
-                        st.warning(f"OpenAI summarization failed: {summary}. Using fallback method.")
-                        summary = summarize_text(transcript)
+                        st.warning(f"OpenAI summarization failed: {summary}. Trying Groq...")
+                        # Fallback to Groq if available
+                        if st.session_state.groq_available and st.session_state.groq_api_key and st.session_state.groq_client:
+                            summary, success = summarize_with_groq(transcript, video_title)
+                            if success:
+                                st.session_state.summary = summary
+                                st.success("Summary generated using Groq! ✅")
+                            else:
+                                st.warning(f"Groq summarization also failed: {summary}. Using fallback method.")
+                                summary = summarize_text(transcript)
+                                st.session_state.summary = summary
+                                st.info("Summary generated using fallback method. ⚠️")
+                        else:
+                            summary = summarize_text(transcript)
+                            st.session_state.summary = summary
+                            st.info("Summary generated using fallback method. ⚠️")
+                
+                # Try Groq if available and selected
+                elif st.session_state.api_provider == "groq" and st.session_state.groq_available and st.session_state.groq_api_key and st.session_state.groq_client:
+                    summary, success = summarize_with_groq(transcript, video_title)
+                    if success:
                         st.session_state.summary = summary
-                        st.info("Summary generated using fallback method. ⚠️")
+                        st.success("Summary generated using Groq! ✅")
+                    else:
+                        st.warning(f"Groq summarization failed: {summary}. Trying OpenAI...")
+                        # Fallback to OpenAI if available
+                        if st.session_state.openai_available and st.session_state.openai_api_key and st.session_state.openai_client:
+                            summary, success = summarize_with_openai(transcript, video_title)
+                            if success:
+                                st.session_state.summary = summary
+                                st.success("Summary generated using OpenAI! ✅")
+                            else:
+                                st.warning(f"OpenAI summarization also failed: {summary}. Using fallback method.")
+                                summary = summarize_text(transcript)
+                                st.session_state.summary = summary
+                                st.info("Summary generated using fallback method. ⚠️")
+                        else:
+                            summary = summarize_text(transcript)
+                            st.session_state.summary = summary
+                            st.info("Summary generated using fallback method. ⚠️")
+                
+                # Fallback to local summarization
                 else:
                     summary = summarize_text(transcript)
                     st.session_state.summary = summary
