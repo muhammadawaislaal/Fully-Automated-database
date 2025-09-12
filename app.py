@@ -7,6 +7,11 @@ import time
 import xml.etree.ElementTree as ET
 import sys
 import subprocess
+import warnings
+from bs4 import XMLParsedAsHTMLWarning
+
+# Suppress XML parsing warnings
+warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning)
 
 # Try to import openai, install if not available
 try:
@@ -43,11 +48,14 @@ def setup_openai():
         # Check if OpenAI API key is available in secrets
         if hasattr(st, 'secrets'):
             # Method 1: Check for openai.api_key directly
-            if hasattr(st.secrets, 'openai') and hasattr(st.secrets.openai, 'api_key'):
-                st.session_state.openai_api_key = st.secrets.openai.api_key
-                openai.api_key = st.session_state.openai_api_key
-                st.session_state.openai_available = True
-                return True
+            try:
+                if hasattr(st.secrets, 'openai') and hasattr(st.secrets.openai, 'api_key'):
+                    st.session_state.openai_api_key = st.secrets.openai.api_key
+                    openai.api_key = st.session_state.openai_api_key
+                    st.session_state.openai_available = True
+                    return True
+            except:
+                pass
             
             # Method 2: Check for dictionary-style access
             try:
@@ -60,11 +68,14 @@ def setup_openai():
                 pass
                 
             # Method 3: Check for direct API key in secrets
-            if 'OPENAI_API_KEY' in st.secrets:
-                st.session_state.openai_api_key = st.secrets['OPENAI_API_KEY']
-                openai.api_key = st.session_state.openai_api_key
-                st.session_state.openai_available = True
-                return True
+            try:
+                if 'OPENAI_API_KEY' in st.secrets:
+                    st.session_state.openai_api_key = st.secrets['OPENAI_API_KEY']
+                    openai.api_key = st.session_state.openai_api_key
+                    st.session_state.openai_available = True
+                    return True
+            except:
+                pass
                 
         return False
     except Exception as e:
@@ -171,7 +182,12 @@ def get_transcript(video_id):
             transcript_response = requests.get(transcript_url, headers=headers, timeout=15)
             
             if transcript_response.status_code == 200:
-                transcript_soup = BeautifulSoup(transcript_response.text, 'html.parser')
+                # Use XML parser for XML content
+                if 'xml' in transcript_response.headers.get('Content-Type', ''):
+                    transcript_soup = BeautifulSoup(transcript_response.text, 'xml')
+                else:
+                    transcript_soup = BeautifulSoup(transcript_response.text, 'html.parser')
+                
                 transcript_div = transcript_soup.find('div', {'id': 'transcript'})
                 if transcript_div:
                     transcript = transcript_div.get_text(separator=' ', strip=True)
