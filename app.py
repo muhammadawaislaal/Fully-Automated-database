@@ -42,33 +42,45 @@ def extract_video_id(url: str):
 
 
 def get_transcript(video_id: str):
-    """Get transcript with fallback for auto-generated/other languages"""
+    """Get transcript, fallback to auto-generated or non-English"""
     try:
-        transcript = None
         transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
 
-        # Try exact English transcript first
-        if transcript_list.find_transcript(['en']):
+        # Try manual English transcript
+        try:
             t = transcript_list.find_transcript(['en'])
             transcript = t.fetch()
+            text = " ".join([x["text"] for x in transcript if x["text"].strip()])
+            return text, "en", "Success"
+        except:
+            pass
 
-        # Fallback: try auto-generated English
-        elif transcript_list.find_generated_transcript(['en']):
+        # Try auto-generated English
+        try:
             t = transcript_list.find_generated_transcript(['en'])
             transcript = t.fetch()
-
-        if transcript:
             text = " ".join([x["text"] for x in transcript if x["text"].strip()])
-            return text, "Success"
-        else:
-            return None, "No English transcript available."
+            return text, "en", "Success"
+        except:
+            pass
+
+        # Try ANY transcript in another language
+        for t in transcript_list:
+            try:
+                transcript = t.fetch()
+                text = " ".join([x["text"] for x in transcript if x["text"].strip()])
+                return text, t.language_code, "Non-English"
+            except:
+                continue
+
+        return None, None, "No transcript available"
 
     except TranscriptsDisabled:
-        return None, "Transcripts are disabled for this video."
+        return None, None, "Transcripts are disabled for this video."
     except NoTranscriptFound:
-        return None, "No transcript found for this video."
+        return None, None, "No transcript found for this video."
     except Exception as e:
-        return None, f"Error fetching transcript: {str(e)}"
+        return None, None, f"Error fetching transcript: {str(e)}"
 
 
 def count_tokens(text: str):
@@ -89,6 +101,21 @@ def split_text(text, max_tokens=3000):
         chunk_tokens = tokens[i:i + max_tokens]
         chunks.append(encoding.decode(chunk_tokens))
     return chunks
+
+
+def translate_text(text, api_key, source_lang):
+    """Translate non-English transcript into English"""
+    client = OpenAI(api_key=api_key)
+    resp = client.chat.completions.create(
+        model="gpt-3.5-turbo",
+        messages=[
+            {"role": "system", "content": f"You are a translator. Translate from {source_lang} to English."},
+            {"role": "user", "content": text}
+        ],
+        max_tokens=800,
+        temperature=0.3
+    )
+    return resp.choices[0].message.content.strip()
 
 
 def summarize_transcript(transcript, api_key, model="gpt-3.5-turbo"):
@@ -163,14 +190,19 @@ def main():
             return
 
         st.video(f"https://www.youtube.com/watch?v={video_id}")
-        transcript, msg = get_transcript(video_id)
+        transcript, lang, msg = get_transcript(video_id)
 
         if not transcript:
             st.error(f"Could not retrieve transcript: {msg}")
             st.info("⚠️ Try a different video. Not all YouTube videos have transcripts.")
             return
 
-        st.success("Transcript retrieved!")
+        # Translate if needed
+        if lang != "en":
+            st.warning(f"Transcript is in {lang}. Translating to English...")
+            transcript = translate_text(transcript[:3000], api_key, lang)
+
+        st.success("Transcript ready!")
         with st.expander("View Transcript"):
             st.text(transcript[:1000] + "..." if len(transcript) > 1000 else transcript)
 
