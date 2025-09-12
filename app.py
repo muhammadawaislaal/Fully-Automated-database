@@ -79,7 +79,6 @@ def setup_openai():
                 
         return False
     except Exception as e:
-        st.error(f"Error setting up OpenAI: {str(e)}")
         return False
 
 # Run setup
@@ -244,14 +243,14 @@ def summarize_with_openai(text, video_title):
         summary = response.choices[0].message.content.strip()
         return summary, True
         
-    except openai.error.AuthenticationError:
-        return "Authentication error. Please check your OpenAI API key.", False
-    except openai.error.RateLimitError:
-        return "Rate limit exceeded. Please try again later.", False
-    except openai.error.OpenAIError as e:
-        return f"OpenAI API error: {str(e)}", False
     except Exception as e:
-        return f"Unexpected error: {str(e)}", False
+        error_msg = str(e)
+        if "authentication" in error_msg.lower():
+            return "Authentication error. Please check your OpenAI API key.", False
+        elif "rate limit" in error_msg.lower():
+            return "Rate limit exceeded. Please try again later.", False
+        else:
+            return f"OpenAI API error: {error_msg}", False
 
 def summarize_text(text):
     """Fallback local summarization algorithm if OpenAI fails"""
