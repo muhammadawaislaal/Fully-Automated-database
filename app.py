@@ -3,7 +3,8 @@ import openai
 import re
 import tiktoken
 import requests
-from bs4 import BeautifulSoup
+from urllib.parse import parse_qs, urlparse
+import xml.etree.ElementTree as ET
 import json
 
 # Set page configuration
@@ -35,40 +36,8 @@ def extract_video_id(url):
             return match.group(1)
     return None
 
-def get_transcript_from_api(video_id):
-    """
-    Get transcript using a reliable API service
-    This approach uses a third-party service to fetch YouTube transcripts
-    """
-    try:
-        # Using a third-party API to get YouTube transcripts
-        # Note: In production, you might want to use a paid service or YouTube's official API
-        api_url = f"https://youtube-transcriptor.p.rapidapi.com/transcript"
-        querystring = {"video_id": video_id, "lang": "en"}
-        
-        headers = {
-            "X-RapidAPI-Key": "your-rapidapi-key-here",  # You would need to sign up for RapidAPI
-            "X-RapidAPI-Host": "youtube-transcriptor.p.rapidapi.com"
-        }
-        
-        response = requests.get(api_url, headers=headers, params=querystring)
-        
-        if response.status_code == 200:
-            data = response.json()
-            if data.get('transcript'):
-                return data['transcript'], "Success"
-        
-        return None, "Transcript not available via API"
-    
-    except:
-        # Fallback to manual extraction
-        return get_transcript_manual(video_id)
-
-def get_transcript_manual(video_id):
-    """
-    Manual method to extract transcript from YouTube page
-    This is a fallback method that works for many videos
-    """
+def get_captions_from_html(video_id):
+    """Extract captions from YouTube HTML page"""
     try:
         # Fetch the YouTube page
         url = f"https://www.youtube.com/watch?v={video_id}"
@@ -77,76 +46,88 @@ def get_transcript_manual(video_id):
         }
         
         response = requests.get(url, headers=headers)
-        soup = BeautifulSoup(response.text, 'html.parser')
+        html_content = response.text
         
-        # Look for transcript data in the page
-        scripts = soup.find_all('script')
-        transcript_data = None
+        # Look for captions JSON data
+        caption_patterns = [
+            r'"captions":\s*({.*?}),"',
+            r'"captionTracks":\s*(\[.*?\])',
+            r'ytInitialPlayerResponse\s*=\s*({.*?});'
+        ]
         
-        for script in scripts:
-            if 'captionTracks' in str(script):
-                # Extract JSON data from script tag
-                script_text = str(script)
-                start = script_text.find('{"captionTracks":')
-                if start != -1:
-                    end = script_text.find('};', start) + 1
-                    if end != 0:
-                        json_text = script_text[start:end]
-                        try:
-                            data = json.loads(json_text)
-                            caption_tracks = data.get('captionTracks', [])
+        for pattern in caption_patterns:
+            match = re.search(pattern, html_content)
+            if match:
+                try:
+                    captions_data = json.loads(match.group(1))
+                    
+                    # Try different JSON structures
+                    if 'playerCaptionsTracklistRenderer' in captions_data:
+                        caption_tracks = captions_data['playerCaptionsTracklistRenderer'].get('captionTracks', [])
+                    elif 'captionTracks' in captions_data:
+                        caption_tracks = captions_data['captionTracks']
+                    elif isinstance(captions_data, list):
+                        caption_tracks = captions_data
+                    else:
+                        continue
+                    
+                    # Find English captions
+                    for track in caption_tracks:
+                        if (track.get('languageCode') == 'en' and 
+                            track.get('kind') != 'asr' and  # Prefer non-auto-generated
+                            track.get('vssId') and 
+                            '.en' in track.get('vssId', '')):
                             
-                            # Find English captions
-                            for track in caption_tracks:
-                                if track.get('languageCode') == 'en' and track.get('kind') == 'asr':
-                                    transcript_url = track.get('baseUrl')
-                                    if transcript_url:
-                                        # Fetch the transcript XML
-                                        transcript_response = requests.get(transcript_url)
-                                        if transcript_response.status_code == 200:
-                                            transcript_soup = BeautifulSoup(transcript_response.text, 'xml')
-                                            texts = transcript_soup.find_all('text')
-                                            transcript = ' '.join([text.get_text() for text in texts])
-                                            return transcript, "Success"
-                        except:
-                            continue
+                            caption_url = track.get('baseUrl')
+                            if caption_url:
+                                # Fetch the caption XML
+                                caption_response = requests.get(caption_url)
+                                if caption_response.status_code == 200:
+                                    # Parse XML captions
+                                    root = ET.fromstring(caption_response.content)
+                                    transcript = ' '.join([elem.text for elem in root.findall('.//text') if elem.text])
+                                    return transcript, "Success"
+                    
+                except json.JSONDecodeError:
+                    continue
         
-        return None, "Could not extract transcript from page"
+        return None, "No captions found in HTML"
     
     except Exception as e:
         return None, f"Error: {str(e)}"
 
-def get_transcript_simple(video_id):
-    """
-    Simple method that works for many videos with captions
-    """
+def get_transcript_direct(video_id):
+    """Direct method to get transcript using YouTube's internal API"""
     try:
-        # Try to use youtube-transcript-api with correct method names
-        try:
-            from youtube_transcript_api import YouTubeTranscriptApi
-            
-            # Try different method names that might work
-            try:
-                transcript_list = YouTubeTranscriptApi.get_transcript(video_id)
-                transcript = " ".join([entry['text'] for entry in transcript_list])
-                return transcript, "Success"
-            except:
-                try:
-                    # Some versions use list_transcripts
-                    transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
-                    transcript = transcript_list.find_transcript(['en']).fetch()
-                    transcript_text = " ".join([entry['text'] for entry in transcript])
-                    return transcript_text, "Success"
-                except:
-                    pass
-        except:
-            pass
+        # Try to get transcript using YouTube's internal API endpoint
+        transcript_url = f"https://www.youtube.com/api/timedtext?v={video_id}&lang=en"
         
-        # If library methods fail, try manual extraction
-        return get_transcript_manual(video_id)
+        response = requests.get(transcript_url)
+        if response.status_code == 200:
+            # Parse XML response
+            root = ET.fromstring(response.content)
+            transcript = ' '.join([elem.text for elem in root.findall('.//text') if elem.text])
+            if transcript:
+                return transcript, "Success"
+        
+        return None, "No transcript available via direct API"
     
     except Exception as e:
         return None, f"Error: {str(e)}"
+
+def get_transcript_final(video_id):
+    """Final attempt to get transcript using all available methods"""
+    # Try direct API first
+    transcript, error = get_transcript_direct(video_id)
+    if transcript:
+        return transcript, error
+    
+    # Try HTML extraction
+    transcript, error = get_captions_from_html(video_id)
+    if transcript:
+        return transcript, error
+    
+    return None, "All methods failed. This video may not have captions available."
 
 def count_tokens(text):
     """Count tokens in text using tiktoken for GPT-3.5"""
@@ -305,9 +286,9 @@ def main():
         - Longer videos may take more time to process
         """)
         
-        st.markdown("### Example Videos")
+        st.markdown("### Test Videos with Captions")
         st.markdown("Try these videos with known transcripts:")
-        st.markdown("- https://www.youtube.com/watch?v=H14bBuluwB8")
+        st.markdown("- https://www.youtube.com/watch?v=Lp7E973zozs")
         st.markdown("- https://www.youtube.com/watch?v=JcP7wX08vq0")
         st.markdown("- https://www.youtube.com/watch?v=8S0FDjFBj8o")
     
@@ -335,17 +316,16 @@ def main():
         st.video(f"https://www.youtube.com/watch?v={video_id}")
         
         with st.spinner("Fetching transcript..."):
-            # Try to get transcript using our reliable method
-            transcript, error_message = get_transcript_simple(video_id)
+            # Try to get transcript using our final method
+            transcript, error_message = get_transcript_final(video_id)
             
         if not transcript:
             st.error(f"Could not retrieve transcript for this video. {error_message}")
             st.info("""
             **Tips for success:**
-            - Try videos that definitely have captions/subtitles
-            - Try the example videos provided in the sidebar
+            - Try videos that definitely have captions (like the examples in the sidebar)
+            - Make sure the video has English captions available
             - Some videos have region-restricted transcripts
-            - The video might not have captions available
             """)
             return
             
