@@ -3,7 +3,7 @@ import openai
 import re
 import tiktoken
 import requests
-from urllib.parse import urlparse, parse_qs
+from bs4 import BeautifulSoup
 import json
 
 # Set page configuration
@@ -24,7 +24,6 @@ if 'api_key_configured' not in st.session_state:
 
 def extract_video_id(url):
     """Extract YouTube video ID from URL"""
-    # Regular expressions to match YouTube URLs
     patterns = [
         r'(?:https?:\/\/)?(?:www\.)?(?:youtube\.com\/(?:watch\?v=|embed\/)|youtu\.be\/)([^&?\/\s]{11})',
         r'^([^&?\/\s]{11})$'
@@ -36,79 +35,116 @@ def extract_video_id(url):
             return match.group(1)
     return None
 
-def get_transcript_alternative(video_id):
+def get_transcript_from_api(video_id):
     """
-    Alternative method to get YouTube transcript using a different approach
-    This method uses a more direct approach to avoid library version issues
+    Get transcript using a reliable API service
+    This approach uses a third-party service to fetch YouTube transcripts
     """
     try:
-        # Try to get transcript using a direct API call approach
-        transcript_url = f"https://youtube.com/watch?v={video_id}"
+        # Using a third-party API to get YouTube transcripts
+        # Note: In production, you might want to use a paid service or YouTube's official API
+        api_url = f"https://youtube-transcriptor.p.rapidapi.com/transcript"
+        querystring = {"video_id": video_id, "lang": "en"}
         
-        # Use a service that provides YouTube transcripts
-        # Note: This is a simplified approach - in a production environment,
-        # you might want to use a more reliable method or service
+        headers = {
+            "X-RapidAPI-Key": "your-rapidapi-key-here",  # You would need to sign up for RapidAPI
+            "X-RapidAPI-Host": "youtube-transcriptor.p.rapidapi.com"
+        }
         
-        # For now, we'll use a simple approach that works for many videos
-        try:
-            # Try to import and use the library with the correct method name
-            from youtube_transcript_api import YouTubeTranscriptApi
-            
-            # Try different method names that might work
-            try:
-                # Try the most common method name
-                transcript_list = YouTubeTranscriptApi.get_transcript(video_id)
-                transcript = " ".join([entry['text'] for entry in transcript_list])
-                return transcript, "Success"
-            except AttributeError:
-                try:
-                    # Try another possible method name
-                    transcript_list = YouTubeTranscriptApi.fetch_transcript(video_id)
-                    transcript = " ".join([entry['text'] for entry in transcript_list])
-                    return transcript, "Success"
-                except:
-                    # If all else fails, try to list available transcripts first
-                    try:
-                        available_transcripts = YouTubeTranscriptApi.list_transcripts(video_id)
-                        for transcript in available_transcripts:
-                            try:
-                                transcript_data = transcript.fetch()
-                                transcript_text = " ".join([entry['text'] for entry in transcript_data])
-                                return transcript_text, "Success"
-                            except:
-                                continue
-                    except:
-                        pass
-            
-            return None, "Could not find a working method to fetch transcript"
-            
-        except ImportError:
-            return None, "YouTubeTranscriptApi library not available"
-            
+        response = requests.get(api_url, headers=headers, params=querystring)
+        
+        if response.status_code == 200:
+            data = response.json()
+            if data.get('transcript'):
+                return data['transcript'], "Success"
+        
+        return None, "Transcript not available via API"
+    
+    except:
+        # Fallback to manual extraction
+        return get_transcript_manual(video_id)
+
+def get_transcript_manual(video_id):
+    """
+    Manual method to extract transcript from YouTube page
+    This is a fallback method that works for many videos
+    """
+    try:
+        # Fetch the YouTube page
+        url = f"https://www.youtube.com/watch?v={video_id}"
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+        
+        response = requests.get(url, headers=headers)
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # Look for transcript data in the page
+        scripts = soup.find_all('script')
+        transcript_data = None
+        
+        for script in scripts:
+            if 'captionTracks' in str(script):
+                # Extract JSON data from script tag
+                script_text = str(script)
+                start = script_text.find('{"captionTracks":')
+                if start != -1:
+                    end = script_text.find('};', start) + 1
+                    if end != 0:
+                        json_text = script_text[start:end]
+                        try:
+                            data = json.loads(json_text)
+                            caption_tracks = data.get('captionTracks', [])
+                            
+                            # Find English captions
+                            for track in caption_tracks:
+                                if track.get('languageCode') == 'en' and track.get('kind') == 'asr':
+                                    transcript_url = track.get('baseUrl')
+                                    if transcript_url:
+                                        # Fetch the transcript XML
+                                        transcript_response = requests.get(transcript_url)
+                                        if transcript_response.status_code == 200:
+                                            transcript_soup = BeautifulSoup(transcript_response.text, 'xml')
+                                            texts = transcript_soup.find_all('text')
+                                            transcript = ' '.join([text.get_text() for text in texts])
+                                            return transcript, "Success"
+                        except:
+                            continue
+        
+        return None, "Could not extract transcript from page"
+    
     except Exception as e:
         return None, f"Error: {str(e)}"
 
 def get_transcript_simple(video_id):
     """
-    Simple method to get YouTube transcript using requests
-    This is a fallback method that might work for some videos
+    Simple method that works for many videos with captions
     """
     try:
-        # Try to get transcript using a direct HTTP request
-        # This is a simplified approach that might work for some videos
-        transcript_url = f"https://youtube.com/watch?v={video_id}"
+        # Try to use youtube-transcript-api with correct method names
+        try:
+            from youtube_transcript_api import YouTubeTranscriptApi
+            
+            # Try different method names that might work
+            try:
+                transcript_list = YouTubeTranscriptApi.get_transcript(video_id)
+                transcript = " ".join([entry['text'] for entry in transcript_list])
+                return transcript, "Success"
+            except:
+                try:
+                    # Some versions use list_transcripts
+                    transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+                    transcript = transcript_list.find_transcript(['en']).fetch()
+                    transcript_text = " ".join([entry['text'] for entry in transcript])
+                    return transcript_text, "Success"
+                except:
+                    pass
+        except:
+            pass
         
-        # Use a service or API that provides YouTube transcripts
-        # For demonstration purposes, we'll use a simple approach
-        
-        # In a real application, you might want to use a service like:
-        # - A custom API endpoint
-        # - A different library
-        # - YouTube's official API (with proper authentication)
-        
-        # For now, we'll return an error message suggesting to try a different video
-        return None, "This video might not have captions available. Please try a different video with captions."
-        
+        # If library methods fail, try manual extraction
+        return get_transcript_manual(video_id)
+    
     except Exception as e:
         return None, f"Error: {str(e)}"
 
@@ -268,22 +304,15 @@ def main():
         - Try videos that definitely have captions/subtitles
         - Longer videos may take more time to process
         """)
+        
+        st.markdown("### Example Videos")
+        st.markdown("Try these videos with known transcripts:")
+        st.markdown("- https://www.youtube.com/watch?v=H14bBuluwB8")
+        st.markdown("- https://www.youtube.com/watch?v=JcP7wX08vq0")
+        st.markdown("- https://www.youtube.com/watch?v=8S0FDjFBj8o")
     
     # Main content area
     url = st.text_input("YouTube Video URL", placeholder="Paste YouTube URL here...")
-    
-    # Example videos with known transcripts
-    st.markdown("### Try these example videos (with transcripts):")
-    col1, col2 = st.columns(2)
-    with col1:
-        if st.button("Example 1: TED Talk"):
-            st.session_state.example_url = "https://www.youtube.com/watch?v=H14bBuluwB8"
-    with col2:
-        if st.button("Example 2: Tech Presentation"):
-            st.session_state.example_url = "https://www.youtube.com/watch?v=JcP7wX08vq0"
-    
-    if 'example_url' in st.session_state:
-        url = st.text_input("YouTube Video URL", value=st.session_state.example_url)
     
     generate_btn = st.button("Generate Summary", disabled=not st.session_state.api_key_configured)
     
@@ -306,19 +335,15 @@ def main():
         st.video(f"https://www.youtube.com/watch?v={video_id}")
         
         with st.spinner("Fetching transcript..."):
-            # Try to get transcript using our alternative method
-            transcript, error_message = get_transcript_alternative(video_id)
-            
-            # If that fails, try the simple method
-            if not transcript:
-                transcript, error_message = get_transcript_simple(video_id)
+            # Try to get transcript using our reliable method
+            transcript, error_message = get_transcript_simple(video_id)
             
         if not transcript:
             st.error(f"Could not retrieve transcript for this video. {error_message}")
             st.info("""
             **Tips for success:**
             - Try videos that definitely have captions/subtitles
-            - Try the example videos provided above
+            - Try the example videos provided in the sidebar
             - Some videos have region-restricted transcripts
             - The video might not have captions available
             """)
