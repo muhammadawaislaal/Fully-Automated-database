@@ -5,7 +5,7 @@ import tiktoken
 import requests
 import json
 
-# Try to import YouTubeTranscriptApi with compatibility handling
+# Import YouTubeTranscriptApi
 try:
     from youtube_transcript_api import YouTubeTranscriptApi
     from youtube_transcript_api._errors import TranscriptsDisabled, VideoUnavailable, TooManyRequests
@@ -261,34 +261,9 @@ def main():
         - Try videos that definitely have captions/subtitles
         - Longer videos may take more time to process
         """)
-        
-        st.markdown("### Test Videos with Captions")
-        st.markdown("Try these videos with known transcripts:")
-        st.markdown("- https://www.youtube.com/watch?v=Lp7E973zozs (TED Talk)")
-        st.markdown("- https://www.youtube.com/watch?v=JcP7wX08vq0 (Google I/O)")
-        st.markdown("- https://www.youtube.com/watch?v=8S0FDjFBj8o (Microsoft Build)")
     
     # Main content area
     url = st.text_input("YouTube Video URL", placeholder="Paste YouTube URL here...")
-    
-    # Example video buttons
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        if st.button("TED Talk Example"):
-            st.session_state.url = "https://www.youtube.com/watch?v=Lp7E973zozs"
-            st.experimental_rerun()
-    with col2:
-        if st.button("Google I/O Example"):
-            st.session_state.url = "https://www.youtube.com/watch?v=JcP7wX08vq0"
-            st.experimental_rerun()
-    with col3:
-        if st.button("Microsoft Build Example"):
-            st.session_state.url = "https://www.youtube.com/watch?v=8S0FDjFBj8o"
-            st.experimental_rerun()
-    
-    # Get URL from session state if set by buttons
-    if hasattr(st.session_state, 'url'):
-        url = st.session_state.url
     
     generate_btn = st.button("Generate Summary", disabled=not st.session_state.api_key_configured)
     
@@ -318,7 +293,7 @@ def main():
             st.error(f"Could not retrieve transcript for this video. {error_message}")
             st.info("""
             **Tips for success:**
-            - Try videos that definitely have captions (like the examples above)
+            - Try videos that definitely have captions
             - Make sure the video has English captions available
             - Some videos have region-restricted transcripts
             - Try refreshing and trying again
