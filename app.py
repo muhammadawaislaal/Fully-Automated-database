@@ -4,9 +4,8 @@ import re
 import tiktoken
 import requests
 import json
-import xml.etree.ElementTree as ET
-from urllib.parse import urlparse, parse_qs
-import time
+from youtube_transcript_api import YouTubeTranscriptApi
+from youtube_transcript_api._errors import TranscriptsDisabled, NoTranscriptAvailable, VideoUnavailable, TooManyRequests
 
 # Set page configuration
 st.set_page_config(
@@ -23,8 +22,6 @@ if 'video_id' not in st.session_state:
     st.session_state.video_id = None
 if 'api_key_configured' not in st.session_state:
     st.session_state.api_key_configured = False
-if 'transcript_method' not in st.session_state:
-    st.session_state.transcript_method = None
 
 def extract_video_id(url):
     """Extract YouTube video ID from URL"""
@@ -39,142 +36,37 @@ def extract_video_id(url):
             return match.group(1)
     return None
 
-def get_captions_from_html(video_id):
-    """Extract captions from YouTube page HTML - Improved version"""
-    try:
-        # Fetch YouTube page
-        url = f"https://www.youtube.com/watch?v={video_id}"
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept-Language': 'en-US,en;q=0.9'
-        }
-        
-        response = requests.get(url, headers=headers, timeout=10)
-        html_content = response.text
-        
-        # Look for caption tracks in the HTML
-        caption_pattern = r'"captionTracks":\s*(\[.*?\])'
-        match = re.search(caption_pattern, html_content)
-        
-        if match:
-            try:
-                caption_data = json.loads(match.group(1))
-                
-                # Try to find English captions first
-                for track in caption_data:
-                    if (track.get('languageCode') == 'en' and 
-                        track.get('vssId') and '.en' in track.get('vssId', '')):
-                        
-                        caption_url = track.get('baseUrl')
-                        if caption_url:
-                            # Add &fmt=json to get JSON format which is easier to parse
-                            if '&fmt=' not in caption_url:
-                                caption_url += '&fmt=json3'
-                            
-                            caption_response = requests.get(caption_url, headers=headers, timeout=10)
-                            if caption_response.status_code == 200:
-                                try:
-                                    # Try to parse as JSON first
-                                    caption_json = caption_response.json()
-                                    events = caption_json.get('events', [])
-                                    transcript_text = ""
-                                    
-                                    for event in events:
-                                        if 'segs' in event:
-                                            for seg in event['segs']:
-                                                if 'utf8' in seg:
-                                                    transcript_text += seg['utf8'] + " "
-                                    
-                                    if transcript_text.strip():
-                                        return transcript_text, "Success (HTML/JSON method)"
-                                except:
-                                    # Fallback to XML parsing
-                                    try:
-                                        root = ET.fromstring(caption_response.content)
-                                        text_elements = []
-                                        
-                                        for elem in root.iter('text'):
-                                            if elem.text:
-                                                text_elements.append(elem.text)
-                                        
-                                        if text_elements:
-                                            transcript = " ".join(text_elements)
-                                            return transcript, "Success (HTML/XML method)"
-                                    except:
-                                        continue
-            except json.JSONDecodeError:
-                pass
-        
-        return None, "No captions found in HTML"
-    
-    except Exception as e:
-        return None, f"Error: {str(e)}"
-
-def get_captions_via_youtube_transcript_api(video_id):
-    """Try to get captions using youtube-transcript-api approach"""
-    try:
-        # This mimics what youtube-transcript-api does
-        transcript_url = f"https://www.youtube.com/watch?v={video_id}"
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'Accept-Language': 'en-US,en;q=0.9'
-        }
-        
-        response = requests.get(transcript_url, headers=headers, timeout=10)
-        html_content = response.text
-        
-        # Try to find the captions configuration
-        splitted_html = html_content.split('"captions":')
-        
-        if len(splitted_html) > 1:
-            captions_json = json.loads(splitted_html[1].split(',"videoDetails"')[0].replace('\n', ''))
-            caption_tracks = captions_json['playerCaptionsTracklistRenderer']['captionTracks']
-            
-            # Look for English captions
-            for track in caption_tracks:
-                if track.get('languageCode', '').startswith('en'):
-                    caption_url = track.get('baseUrl', '')
-                    if caption_url:
-                        # Get the transcript
-                        transcript_response = requests.get(caption_url, headers=headers, timeout=10)
-                        if transcript_response.status_code == 200:
-                            try:
-                                # Parse XML
-                                root = ET.fromstring(transcript_response.content)
-                                text_elements = []
-                                
-                                for elem in root.iter('text'):
-                                    if elem.text:
-                                        text_elements.append(elem.text)
-                                
-                                if text_elements:
-                                    transcript = " ".join(text_elements)
-                                    return transcript, "Success (Transcript API method)"
-                            except:
-                                pass
-        
-        return None, "No captions found via Transcript API"
-    
-    except Exception as e:
-        return None, f"Error: {str(e)}"
-
 def get_transcript(video_id):
-    """Main function to get transcript using multiple methods"""
-    methods = [
-        get_captions_via_youtube_transcript_api,
-        get_captions_from_html
-    ]
-    
-    for method in methods:
-        transcript, error = method(video_id)
-        if transcript:
-            st.session_state.transcript_method = method.__name__
-            return transcript, error
+    """Get transcript using YouTube Transcript API"""
+    try:
+        # Try to get English transcript first
+        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
         
-        # Add a small delay between attempts
-        time.sleep(1)
+        # Try to get English transcript
+        try:
+            transcript = transcript_list.find_transcript(['en'])
+            translated_transcript = transcript.translate('en')
+            transcript_data = translated_transcript.fetch()
+        except:
+            # If English not available, get the first available transcript
+            transcript = transcript_list.find_transcript([t.language_code for t in transcript_list])
+            translated_transcript = transcript.translate('en')
+            transcript_data = translated_transcript.fetch()
+        
+        # Combine all text elements
+        text = ' '.join([item['text'] for item in transcript_data])
+        return text, "Success"
     
-    return None, "All methods failed. This video may not have captions available."
+    except TranscriptsDisabled:
+        return None, "Transcripts are disabled for this video"
+    except NoTranscriptAvailable:
+        return None, "No transcript available for this video"
+    except VideoUnavailable:
+        return None, "Video is unavailable"
+    except TooManyRequests:
+        return None, "Too many requests. Please try again later."
+    except Exception as e:
+        return None, f"Error: {str(e)}"
 
 def count_tokens(text):
     """Count tokens in text using tiktoken for GPT-3.5"""
@@ -374,8 +266,8 @@ def main():
         st.markdown(f"### Video Preview")
         st.video(f"https://www.youtube.com/watch?v={video_id}")
         
-        with st.spinner("Fetching transcript (this may take a moment)..."):
-            # Try to get transcript using our method
+        with st.spinner("Fetching transcript..."):
+            # Try to get transcript using YouTube Transcript API
             transcript, error_message = get_transcript(video_id)
             
         if not transcript:
@@ -389,7 +281,7 @@ def main():
             """)
             return
             
-        st.success(f"Successfully retrieved transcript using {st.session_state.transcript_method}!")
+        st.success("Successfully retrieved transcript!")
             
         with st.expander("View Raw Transcript"):
             st.text(transcript[:1000] + "..." if len(transcript) > 1000 else transcript)
