@@ -2,5 +2,3 @@ streamlit>=1.22.0
 openai>=0.27.0
 tiktoken>=0.4.0
 requests>=2.25.1
-beautifulsoup4>=4.9.3
-youtube-transcript-api>=0.5.0
