@@ -32,21 +32,24 @@ if 'video_id' not in st.session_state:
 if 'transcript_status' not in st.session_state:
     st.session_state.transcript_status = None
 if 'openai_available' not in st.session_state:
-    st.session_state.openai_available = True
+    st.session_state.openai_available = False
+if 'openai_api_key' not in st.session_state:
+    st.session_state.openai_api_key = None
 
 # Set up OpenAI API
-if 'openai_api_key' not in st.session_state:
-    try:
-        if 'openai' in st.secrets and 'api_key' in st.secrets.openai:
-            st.session_state.openai_api_key = st.secrets.openai.api_key
-            openai.api_key = st.secrets.openai.api_key
+try:
+    # Check if OpenAI API key is available in secrets
+    if hasattr(st, 'secrets') and st.secrets is not None:
+        if 'openai' in st.secrets and 'api_key' in st.secrets['openai']:
+            st.session_state.openai_api_key = st.secrets['openai']['api_key']
+            openai.api_key = st.session_state.openai_api_key
             st.session_state.openai_available = True
         else:
-            st.session_state.openai_api_key = None
             st.session_state.openai_available = False
-    except Exception:
-        st.session_state.openai_api_key = None
+    else:
         st.session_state.openai_available = False
+except Exception as e:
+    st.session_state.openai_available = False
 
 def extract_video_id(url):
     """Extract YouTube video ID from URL"""
@@ -165,7 +168,6 @@ def get_transcript(video_id):
 def generate_realistic_transcript(video_title):
     """Generate a realistic transcript based on video title"""
     # This is a fallback for when we can't get a real transcript
-    # In a real application, you would want to implement better fallback methods
     return f"This is a simulated transcript for the video titled '{video_title}'. In a real implementation, this would be replaced with the actual transcript extracted from the YouTube video. For a fully functional version, please ensure you have proper access to YouTube's API or use a dedicated service for transcript extraction."
 
 def summarize_with_openai(text, video_title):
@@ -258,8 +260,17 @@ def main():
     st.markdown("Generate intelligent summaries of YouTube videos using OpenAI's advanced AI")
     
     # Check for API key
-    if not st.session_state.openai_api_key:
+    if not st.session_state.openai_available:
         st.warning("⚠️ OpenAI API key not found. Please make sure you've added it to your Streamlit secrets. Using fallback summarization method.")
+    
+    # Manual API key input option
+    with st.expander("Manual API Key Input (Alternative to Secrets)"):
+        manual_api_key = st.text_input("Enter your OpenAI API key manually:", type="password")
+        if manual_api_key:
+            st.session_state.openai_api_key = manual_api_key
+            openai.api_key = manual_api_key
+            st.session_state.openai_available = True
+            st.success("API key set successfully!")
     
     # Main content area
     url = st.text_input("YouTube Video URL", placeholder="Paste YouTube URL here...")
@@ -312,7 +323,7 @@ def main():
             try:
                 video_title = get_video_title(video_id)
                 
-                if st.session_state.openai_api_key and st.session_state.openai_available:
+                if st.session_state.openai_available:
                     summary, success = summarize_with_openai(transcript, video_title)
                     if success:
                         st.session_state.summary = summary
@@ -331,7 +342,8 @@ def main():
                 
                 # Display word count for summary
                 if transcript:
-                    st.info(f"Summary length: {count_words(summary)} words (reduced by {int((1 - count_words(summary)/count_words(transcript)) * 100)}%)")
+                    reduction = int((1 - count_words(summary)/count_words(transcript)) * 100)
+                    st.info(f"Summary length: {count_words(summary)} words (reduced by {reduction}%)")
                     
             except Exception as e:
                 st.error(f"Error during summarization: {str(e)}")
