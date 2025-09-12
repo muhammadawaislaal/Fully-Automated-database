@@ -4,6 +4,8 @@ from youtube_transcript_api import YouTubeTranscriptApi
 from youtube_transcript_api._errors import TranscriptsDisabled, NoTranscriptFound, VideoUnavailable
 import re
 import tiktoken
+import requests
+import json
 
 # Set page configuration
 st.set_page_config(
@@ -37,12 +39,12 @@ def extract_video_id(url):
     return None
 
 def get_transcript(video_id):
-    """Fetch transcript for a YouTube video"""
+    """Fetch transcript for a YouTube video using correct API methods"""
     try:
-        # Get transcript using the correct API method
+        # Get transcript using the correct method
         transcript_list = YouTubeTranscriptApi.get_transcript(video_id)
         transcript = " ".join([entry['text'] for entry in transcript_list])
-        return transcript, "en"
+        return transcript, "Success"
     except TranscriptsDisabled:
         return None, "Transcripts are disabled for this video."
     except NoTranscriptFound:
@@ -51,6 +53,35 @@ def get_transcript(video_id):
         return None, "Video is unavailable."
     except Exception as e:
         return None, f"Error: {str(e)}"
+
+def get_transcript_fallback(video_id):
+    """Alternative method to get transcript if main method fails"""
+    try:
+        # Try a different approach - list transcripts first
+        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+        
+        # Try to get the first available transcript
+        for transcript in transcript_list:
+            try:
+                transcript_data = transcript.fetch()
+                transcript_text = " ".join([entry['text'] for entry in transcript_data])
+                return transcript_text, "Success"
+            except:
+                continue
+                
+        return None, "No transcript could be fetched"
+    except Exception as e:
+        return None, f"Fallback error: {str(e)}"
+
+def get_transcript_direct(video_id):
+    """Direct method using the correct API call"""
+    try:
+        # This is the correct way to call the API
+        transcript = YouTubeTranscriptApi.get_transcript(video_id)
+        text = " ".join([entry['text'] for entry in transcript])
+        return text, "Success"
+    except Exception as e:
+        return None, f"Direct method error: {str(e)}"
 
 def count_tokens(text):
     """Count tokens in text using tiktoken for GPT-3.5"""
@@ -232,10 +263,16 @@ def main():
         st.video(f"https://www.youtube.com/watch?v={video_id}")
         
         with st.spinner("Fetching transcript..."):
-            transcript, error_message = get_transcript(video_id)
+            # Try multiple methods to get transcript
+            transcript, error_message = get_transcript_direct(video_id)
+            
+            if not transcript:
+                st.warning("First method failed, trying fallback...")
+                transcript, error_message = get_transcript_fallback(video_id)
             
         if not transcript:
             st.error(f"Could not retrieve transcript for this video. {error_message}")
+            st.info("This video might not have captions available, or the captions are not accessible.")
             return
             
         st.success("Successfully retrieved transcript!")
