@@ -1,6 +1,7 @@
 import streamlit as st
 from openai import OpenAI
-from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
+from youtube_transcript_api import YouTubeTranscriptApi
+from youtube_transcript_api._errors import TranscriptsDisabled, NoTranscriptFound
 import re
 import tiktoken
 
@@ -41,11 +42,27 @@ def extract_video_id(url: str):
 
 
 def get_transcript(video_id: str):
-    """Get transcript using youtube-transcript-api"""
+    """Get transcript with fallback for auto-generated/other languages"""
     try:
-        transcript_list = YouTubeTranscriptApi.get_transcript(video_id, languages=["en"])
-        transcript = " ".join([x["text"] for x in transcript_list if x["text"].strip()])
-        return transcript, "Success"
+        transcript = None
+        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+
+        # Try exact English transcript first
+        if transcript_list.find_transcript(['en']):
+            t = transcript_list.find_transcript(['en'])
+            transcript = t.fetch()
+
+        # Fallback: try auto-generated English
+        elif transcript_list.find_generated_transcript(['en']):
+            t = transcript_list.find_generated_transcript(['en'])
+            transcript = t.fetch()
+
+        if transcript:
+            text = " ".join([x["text"] for x in transcript if x["text"].strip()])
+            return text, "Success"
+        else:
+            return None, "No English transcript available."
+
     except TranscriptsDisabled:
         return None, "Transcripts are disabled for this video."
     except NoTranscriptFound:
@@ -150,6 +167,7 @@ def main():
 
         if not transcript:
             st.error(f"Could not retrieve transcript: {msg}")
+            st.info("⚠️ Try a different video. Not all YouTube videos have transcripts.")
             return
 
         st.success("Transcript retrieved!")
