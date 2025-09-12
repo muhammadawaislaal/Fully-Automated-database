@@ -38,6 +38,79 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# Custom CSS for header and footer
+st.markdown("""
+<style>
+    .header {
+        background-color: #f0f2f6;
+        padding: 20px;
+        border-radius: 10px;
+        margin-bottom: 20px;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+    }
+    .footer {
+        background-color: #f0f2f6;
+        padding: 15px;
+        border-radius: 10px;
+        margin-top: 30px;
+        text-align: center;
+        font-size: 14px;
+        box-shadow: 0 -4px 6px rgba(0, 0, 0, 0.1);
+    }
+    .developer-info {
+        text-align: center;
+        margin-bottom: 15px;
+        font-weight: bold;
+        color: #1f77b4;
+    }
+    .instructions {
+        background-color: #e6f7ff;
+        padding: 15px;
+        border-radius: 10px;
+        margin-bottom: 20px;
+        border-left: 5px solid #1f77b4;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# Header with project information
+st.markdown("""
+<div class="header">
+    <h1 style="text-align: center; color: #1f77b4;">📺 YouTube Video Summarizer</h1>
+    <div class="developer-info">Developed by Muhammad Awais Laal</div>
+    <p style="text-align: center;">Generate intelligent summaries of YouTube videos using AI APIs</p>
+</div>
+""", unsafe_allow_html=True)
+
+# Instructions section
+with st.expander("📋 Instructions & Information", expanded=True):
+    st.markdown("""
+    <div class="instructions">
+    <h3>How to use this tool:</h3>
+    <ol>
+        <li>Paste a YouTube video URL in the input field below</li>
+        <li>Configure your API keys (either via Streamlit secrets or manually)</li>
+        <li>Click the "Generate Summary" button</li>
+        <li>View the AI-generated summary of the video content</li>
+    </ol>
+    
+    <h3>Features:</h3>
+    <ul>
+        <li>Extracts transcripts from YouTube videos</li>
+        <li>Uses OpenAI or Groq AI for summarization</li>
+        <li>Fallback local summarization if APIs are unavailable</li>
+        <li>Displays video preview and transcript information</li>
+    </ul>
+    
+    <h3>Note:</h3>
+    <ul>
+        <li>Some videos may not have available transcripts</li>
+        <li>API keys are required for optimal performance</li>
+        <li>For longer videos, the transcript may be truncated</li>
+    </ul>
+    </div>
+    """, unsafe_allow_html=True)
+
 # Initialize session state variables
 if 'summary' not in st.session_state:
     st.session_state.summary = None
@@ -384,9 +457,6 @@ def count_words(text):
     return len(text.split())
 
 def main():
-    st.title("📺 YouTube Video Summarizer")
-    st.markdown("Generate intelligent summaries of YouTube videos using AI APIs")
-    
     # Check for API keys
     if not st.session_state.openai_available and not st.session_state.groq_available:
         st.warning("⚠️ No API keys found in secrets. You can enter them manually below.")
@@ -564,6 +634,14 @@ def main():
         st.markdown("### Copy Your Summary")
         st.code(st.session_state.summary)
         st.success("Summary content ready to copy! Select the text above and use Ctrl+C.")
+
+    # Footer
+    st.markdown("""
+    <div class="footer">
+        <p>YouTube Video Summarizer - Developed by Muhammad Awais Laal</p>
+        <p>This tool uses AI to generate summaries of YouTube video content. Please ensure you have the right to access and summarize the content.</p>
+    </div>
+    """, unsafe_allow_html=True)
 
 if __name__ == "__main__":
     main()
