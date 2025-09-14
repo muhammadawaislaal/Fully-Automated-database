@@ -383,7 +383,65 @@ def count_words(text):
     """Simple word count"""
     return len(text.split())
 
+# Add sidebar with project information
+def add_sidebar_info():
+    with st.sidebar:
+        st.title("📺 YouTube Video Summarizer")
+        st.markdown("---")
+        
+        st.header("ℹ️ About This Project")
+        st.markdown("""
+        This application extracts transcripts from YouTube videos and generates 
+        intelligent summaries using AI APIs (OpenAI or Groq).
+        
+        **Key Features:**
+        - Extract transcripts from YouTube videos
+        - Generate AI-powered summaries
+        - Support for multiple AI providers
+        - Fallback local summarization if APIs fail
+        """)
+        
+        st.header("🔧 Setup Instructions")
+        st.markdown("""
+        **For Local Development:**
+        1. Clone the repository
+        2. Install requirements: `pip install -r requirements.txt`
+        3. Set up API keys in Streamlit secrets or manually input them
+        4. Run: `streamlit run app.py`
+        
+        **API Keys Configuration:**
+        - Get an OpenAI API key from [OpenAI Platform](https://platform.openai.com)
+        - Get a Groq API key from [Groq Cloud](https://console.groq.com)
+        - Add keys to Streamlit secrets or use the manual input option
+        """)
+        
+        st.header("🚀 How to Use")
+        st.markdown("""
+        1. Paste a YouTube URL in the main input field
+        2. Configure your API provider and keys if needed
+        3. Click 'Generate Summary'
+        4. View the extracted transcript and AI-generated summary
+        5. Copy the summary for your use
+        """)
+        
+        st.markdown("---")
+        
+        # Footer with developer info
+        st.markdown("### 👨‍💻 Developer")
+        st.markdown("**Muhammad Awais Laal**")
+        st.markdown("---")
+        
+        st.markdown("""
+        <div style='text-align: center; color: gray; font-size: 0.8em; margin-top: 20px;'>
+            YouTube Video Summarizer Project<br>
+            For support or questions, contact the developer
+        </div>
+        """, unsafe_allow_html=True)
+
 def main():
+    # Add sidebar with project info
+    add_sidebar_info()
+    
     st.title("📺 YouTube Video Summarizer")
     st.markdown("Generate intelligent summaries of YouTube videos using AI APIs")
     
